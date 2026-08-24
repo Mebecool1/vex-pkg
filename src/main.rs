@@ -5,14 +5,12 @@ mod serve;
 mod vex_lang;
 mod install;
 // start
-
-
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
         eprintln!("usage: vex <command>");
-        eprintln!("commands: rebuild, serve");
+        eprintln!("commands: rebuild, serve, list, version, fetch");
         std::process::exit(1);
     }
 
@@ -29,9 +27,16 @@ fn main() {
     let pkgs = vex_lang::get_values(&parsed_pkgs, "packages");
     println!("Loaded all packages and repos...;");
     match args[1].as_str() {
-       
+        "portserve" => {
+            if args.len() < 3 {
+                eprintln!("usage: vex portserve <port: 5 digit no.>");
+                std::process::exit(1);
+            }
+            let port: i32 = args[2].parse().unwrap();
+            serve::serve(port);
+        }
         "serve" => {
-            serve::serve();
+            serve::serve(45311);
         }
         "list" => {
             for repo in &repos {
@@ -62,4 +67,5 @@ fn main() {
             std::process::exit(1);
         }
     }
+    
 }

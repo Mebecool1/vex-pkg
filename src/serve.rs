@@ -1,9 +1,9 @@
 use tiny_http::{Response, Server};
 use std::fs;
 
-pub fn serve() {
-    let server = Server::http("127.0.0.1:45311").unwrap();
-    println!("vex serving on http://127.0.0.1:45311/vex/pkgs/");
+pub fn serve(port: i32) {
+    let server = Server::http(format!("http://127.0.0.1:{port}")).unwrap();
+    println!("vex serving on http://127.0.0.1:{port}/vex/pkgs/");
 
     for request in server.incoming_requests() {
         let url = request.url().to_string();
