@@ -54,6 +54,9 @@ fn main() {
             install::rebuild(&pkgs, &repos);
             println!("packages rebuilt.");
         }
+        "version" => {
+            println!("vex-pkg v0.1.1")
+        }
         cmd => {
             eprintln!("unknown command: {}", cmd);
             std::process::exit(1);
