@@ -1,0 +1,9 @@
+[package]
+name = "vex-pkg"
+version = "0.1.0"
+edition = "2024"
+description = "A tiny decentralized package manager that anyone can host a server for."
+license = "Apache-2.0"
+[dependencies]
+tiny_http = "0.12.0"
+ureq = "3.4.0"
