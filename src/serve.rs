@@ -33,4 +33,3 @@ pub fn serve(port: u16) {
         }
     }
 }
-

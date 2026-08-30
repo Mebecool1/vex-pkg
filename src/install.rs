@@ -1,7 +1,7 @@
-use std::fs;
+use crate::fetch;
+use crate::vex_lang;
 use std::env;
-use crate::{vex_lang};
-use crate::{fetch};
+use std::fs;
 
 pub fn is_installed(pkg_name: &str) -> bool {
     let home = env::var("HOME").expect("Failed to get HOME");
@@ -57,13 +57,14 @@ fn install_pkg(pkg_name: &str, repos: &[String]) {
     fs::remove_file(&tar_path).ok();
 
     // parse build.vex
-    let build_content = fs::read_to_string(format!("{}/build.vex", pkg_dir))
-        .expect("Failed to read build.vex");
+    let build_content =
+        fs::read_to_string(format!("{}/build.vex", pkg_dir)).expect("Failed to read build.vex");
     let parsed_build = vex_lang::parse_vex(&build_content);
 
     // resolve deps recursively first
     let deps = vex_lang::get_values(&parsed_build, "dependencies");
     for dep in &deps {
+        println!("installing dependency: {}", dep);
         if !dep.is_empty() {
             install_pkg(dep, repos);
         }
@@ -83,3 +84,36 @@ fn install_pkg(pkg_name: &str, repos: &[String]) {
 
     println!("{} installed!", pkg_name);
 }
+pub fn build_tar(tar_name: &str, repos: &[String]) {
+    fs::create_dir_all(format!("{}_dir", tar_name));
+    std::process::Command::new("tar")
+        .args(["-xf", tar_name, "-C", &format!("{}_dir", tar_name)])
+        .status()
+        .expect("Failed to extract tarball");
+
+    let build_content = fs::read_to_string(format!("{}_dir/build.vex", tar_name))
+        .expect("Failed to read build.vex");
+    let parsed_build = vex_lang::parse_vex(&build_content);
+
+    let deps = vex_lang::get_values(&parsed_build, "dependencies");
+    for dep in &deps {
+        println!("installing dependency: {}", dep);
+        if !dep.is_empty() {
+            install_pkg(dep, repos);
+        }
+    }
+
+    let commands = vex_lang::get_values(&parsed_build, "commands");
+    for cmd in &commands {
+        println!("running: {}", cmd);
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(format!("{}_dir", tar_name))
+            .status()
+            .expect("Failed to run command");
+    }
+
+    println!("{} installed!", tar_name);
+}
+

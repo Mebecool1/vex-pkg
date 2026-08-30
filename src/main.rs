@@ -1,9 +1,9 @@
 use std::env;
 use std::fs;
 mod fetch;
+mod install;
 mod serve;
 mod vex_lang;
-mod install;
 // start
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -62,10 +62,19 @@ fn main() {
         "version" => {
             println!("vex-pkg v0.1.1")
         }
+        "build" => {
+            if args.len() < 3 {
+                eprintln!("usage: vex build <name>.tar");
+                std::process::exit(1);
+            }
+            let pkg = &args[2];
+            println!("building package..");
+            install::build_tar(pkg, &repos);
+            println!("package built.")
+        }
         cmd => {
             eprintln!("unknown command: {}", cmd);
             std::process::exit(1);
         }
     }
-    
 }
