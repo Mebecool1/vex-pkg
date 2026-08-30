@@ -10,7 +10,7 @@ fn main() {
 
     if args.len() < 2 {
         eprintln!("usage: vex <command>");
-        eprintln!("commands: rebuild, serve, list, version, fetch");
+        eprintln!("commands: rebuild, serve, list, version, fetch, build, postserve, help");
         std::process::exit(1);
     }
 
@@ -60,7 +60,7 @@ fn main() {
             println!("packages rebuilt.");
         }
         "version" => {
-            println!("vex-pkg v0.1.1")
+            println!("vex-pkg v0.3.6")
         }
         "build" => {
             if args.len() < 3 {
@@ -71,6 +71,101 @@ fn main() {
             println!("building package..");
             install::build_tar(pkg, &repos);
             println!("package built.")
+        }
+        "help" => {
+            println!(
+                "
+                
+
+Commands: {{
+
+  serve -> serve a local server at localhost:45311
+  fetch <pkg> -> fetch pkg
+  build <pkg>.tar -> build pkg locally 
+  rebuild -> rebuild from pkgs.vex from repos on config.vex
+  list -> list available packages for install from all repos 
+  version -> version 
+  portserve <port> -> serve on specific port 
+}}
+
+vex_lang syntax: (.vex) {{
+  
+  key {{
+    \"entry\"
+    \"entry0\"
+    \"entry1\"
+  }}
+  key0 {{
+    \"entry\"
+    \"entry0\"
+    \"entry1\"
+  }}
+  ...
+
+}}
+
+example config.vex :
+
+```
+repos {{
+  \"http://localhost:45311\"
+  \"http://foo.some_server.bar\"
+}}
+```
+
+example pkgs.vex :
+```
+packages {{
+  \"neovim\"
+  \"xenon\"
+  \"foo\"
+  \"bar\"
+}}
+```
+
+all .tar within current directory will be served on portserve and serve.
+
+the .tar must have build.vex within their immediate root.
+
+example :
+
+foo.tar / 
+  build.vex 
+  src/
+    main.rs 
+  Cargo.toml 
+  Cargo.lock
+  install.sh*
+  .gitignore
+
+example build.vex :
+```
+// ignored and optional
+name {{
+  \"sample\"
+}}
+// ignored and optional 
+version {{
+  \"0.1.0\"
+}}
+// optional if you have none but not ignored 
+dependencies {{
+  \"xenon\"
+  \"neovim\"
+}}
+// mandatory and not ignored
+commands {{
+  \"echo installing\"
+  \"cargo build\"
+  \"./install.sh\"
+}}
+
+```
+
+do not ask queries. I do not have enough free time. This is a hobby project for all.
+
+            "
+            )
         }
         cmd => {
             eprintln!("unknown command: {}", cmd);
