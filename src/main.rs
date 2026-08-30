@@ -32,7 +32,7 @@ fn main() {
                 eprintln!("usage: vex portserve <port: 5 digit no.>");
                 std::process::exit(1);
             }
-            let port: i32 = args[2].parse().unwrap();
+            let port: u16 = args[2].parse().unwrap();
             serve::serve(port);
         }
         "serve" => {
@@ -51,7 +51,7 @@ fn main() {
             }
             let pkg_name = &args[2];
             for repo in &repos {
-                fetch::fetch_pkg(repo, pkg_name);
+                fetch::fetch_pkg_to(repo, pkg_name, &format!("{}_pkg.tar", pkg_name));
             }
         }
         "rebuild" => {
