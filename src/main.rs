@@ -22,7 +22,11 @@ fn main() {
 
     let parsed_pkgs = vex_lang::parse_vex(&pkgs_content);
     let parsed_config = vex_lang::parse_vex(&config_content);
-
+    let is_local_vc = vex_lang::get_values(&parsed_config, "local");
+    let mut is_local = false;
+    if is_local_vc.contains(&String::from("true")) {
+        is_local = true;
+    }
     let repos = vex_lang::get_values(&parsed_config, "repositories");
     let pkgs = vex_lang::get_values(&parsed_pkgs, "packages");
     println!("Loaded all packages and repos...;");
@@ -33,10 +37,18 @@ fn main() {
                 std::process::exit(1);
             }
             let port: u16 = args[2].parse().unwrap();
-            serve::serve(port);
+            if is_local {
+                serve::serve(port, "127.0.0.1");
+            } else {
+                serve::serve(port, "0.0.0.0");
+            }
         }
         "serve" => {
-            serve::serve(45311);
+            if is_local {
+                serve::serve(45311, "127.0.0.1");
+            } else {
+                serve::serve(45311, "0.0.0.0");
+            }
         }
         "list" => {
             for repo in &repos {

@@ -1,8 +1,8 @@
 use std::fs;
 use tiny_http::{Response, Server};
 
-pub fn serve(port: u16) {
-    let server = Server::http(format!("127.0.0.1:{port}")).unwrap();
+pub fn serve(port: u16, ip: &str) {
+    let server = Server::http(format!("{ip}:{port}")).unwrap();
     println!("vex serving on http://127.0.0.1:{port}/vex/pkgs/");
 
     for request in server.incoming_requests() {
