@@ -68,7 +68,7 @@ fn main() {
         }
         "rebuild" => {
             println!("rebuilding packages incrementally...");
-            install::rebuild(&pkgs, &repos);
+            install::sync(&pkgs, &repos);
             println!("packages rebuilt.");
         }
         "version" => {
