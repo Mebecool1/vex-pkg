@@ -5,7 +5,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 fn home() -> String {
     env::var("HOME").expect("Failed to get HOME")
@@ -23,14 +23,13 @@ fn tar_path(pkg_name: &str) -> String {
     format!("{}/{}.tar", vex_pkgs_dir(), pkg_name)
 }
 
-/// Path to the manifest file for a package.
-/// Stored inside the pkg dir so it is co-located with the source tree.
 fn manifest_path(pkg_name: &str) -> String {
     format!("{}/.vex_manifest", pkg_dir(pkg_name))
 }
 
+/// A package is only considered properly installed if BOTH the dir AND manifest exist.
 pub fn is_installed(pkg_name: &str) -> bool {
-    Path::new(&pkg_dir(pkg_name)).exists()
+    Path::new(&pkg_dir(pkg_name)).exists() && Path::new(&manifest_path(pkg_name)).exists()
 }
 
 fn installed_pkgs() -> HashSet<String> {
@@ -46,17 +45,7 @@ fn installed_pkgs() -> HashSet<String> {
 }
 
 // ── manifest ──────────────────────────────────────────────────────────────────
-//
-// A manifest is a plain text file; one absolute path per line.
-// Lines starting with 'F' are files, lines starting with 'D' are directories
-// (recorded in creation order; reversed on removal so children come before parents).
-//
-// Format:
-//   F /home/user/.vex/bin/mytool
-//   D /home/user/.vex/bin
-//   F /home/user/.local/lib/libfoo.so
 
-#[derive(Debug)]
 enum ManifestEntry {
     File(PathBuf),
     Dir(PathBuf),
@@ -81,7 +70,7 @@ impl Manifest {
         self.entries.push(ManifestEntry::Dir(path.into()));
     }
 
-    fn save(&self, manifest_file: &str) -> Result<(), String> {
+    fn save(&self, path: &str) -> Result<(), String> {
         let lines: Vec<String> = self
             .entries
             .iter()
@@ -90,84 +79,66 @@ impl Manifest {
                 ManifestEntry::Dir(p) => format!("D {}", p.display()),
             })
             .collect();
-        fs::write(manifest_file, lines.join("\n"))
-            .map_err(|e| format!("Failed to write manifest: {}", e))
+        fs::write(path, lines.join("\n")).map_err(|e| format!("Failed to write manifest: {}", e))
     }
 
-    fn load(manifest_file: &str) -> Result<Self, String> {
-        let content = fs::read_to_string(manifest_file)
-            .map_err(|_| format!("No manifest found at {}", manifest_file))?;
-
+    fn load(path: &str) -> Result<Self, String> {
+        let content =
+            fs::read_to_string(path).map_err(|_| format!("No manifest found at {}", path))?;
         let entries = content
             .lines()
             .filter(|l| l.len() > 2)
             .map(|l| {
-                let path = PathBuf::from(&l[2..]);
-                match &l[..1] {
-                    "F" => ManifestEntry::File(path),
-                    "D" => ManifestEntry::Dir(path),
-                    _ => ManifestEntry::File(path), // fallback
+                let p = PathBuf::from(&l[2..]);
+                if l.starts_with('D') {
+                    ManifestEntry::Dir(p)
+                } else {
+                    ManifestEntry::File(p)
                 }
             })
             .collect();
-
         Ok(Self { entries })
     }
 
-    /// Remove everything the manifest recorded, in reverse order.
-    /// Directories are only removed if they are empty after file removal.
     fn uninstall(&self, pkg_name: &str) {
         for entry in self.entries.iter().rev() {
             match entry {
                 ManifestEntry::File(p) => {
                     if p.exists() {
-                        if let Err(e) = fs::remove_file(p) {
-                            eprintln!("  [warn] could not remove file {}: {}", p.display(), e);
-                        } else {
-                            println!("  [rm file] {}", p.display());
+                        match fs::remove_file(p) {
+                            Ok(_) => println!("  [rm file] {}", p.display()),
+                            Err(e) => eprintln!("  [warn] could not remove {}: {}", p.display(), e),
                         }
                     }
                 }
                 ManifestEntry::Dir(p) => {
-                    // Only remove if now empty — another package may share this dir.
-                    match fs::read_dir(p) {
-                        Ok(mut rd) => {
-                            if rd.next().is_none() {
-                                if let Err(e) = fs::remove_dir(p) {
-                                    eprintln!(
-                                        "  [warn] could not remove dir {}: {}",
-                                        p.display(),
-                                        e
-                                    );
-                                } else {
-                                    println!("  [rm dir] {}", p.display());
-                                }
-                            } else {
-                                println!("  [skip dir, not empty] {}", p.display());
+                    if let Ok(mut rd) = fs::read_dir(p) {
+                        if rd.next().is_none() {
+                            match fs::remove_dir(p) {
+                                Ok(_) => println!("  [rm dir] {}", p.display()),
+                                Err(e) => eprintln!(
+                                    "  [warn] could not remove dir {}: {}",
+                                    p.display(),
+                                    e
+                                ),
                             }
+                        } else {
+                            println!("  [skip dir, not empty] {}", p.display());
                         }
-                        Err(_) => {} // already gone
                     }
                 }
             }
         }
-        // Finally remove the pkg source dir itself.
-        let dir = pkg_dir(pkg_name);
-        if let Err(e) = fs::remove_dir_all(&dir) {
-            eprintln!("  [warn] could not remove pkg dir {}: {}", dir, e);
+        // Remove the pkg source dir itself.
+        if let Err(e) = fs::remove_dir_all(pkg_dir(pkg_name)) {
+            eprintln!("  [warn] could not remove pkg dir: {}", e);
         } else {
-            println!("  [rm pkg dir] {}", dir);
+            println!("  [rm pkg dir] {}", pkg_dir(pkg_name));
         }
     }
 }
 
-// ── filesystem snapshot diff ──────────────────────────────────────────────────
-//
-// Strategy: snapshot the set of all files+dirs under watched roots before the
-// build commands run, then diff against after. Everything new goes into the manifest.
-//
-// Watched roots — anywhere a build.vex is reasonably likely to write to.
-// We deliberately avoid watching / or /usr to keep this fast and safe.
+// ── filesystem snapshot ───────────────────────────────────────────────────────
 
 fn watch_roots() -> Vec<PathBuf> {
     let h = home();
@@ -201,19 +172,15 @@ fn collect_paths(dir: &Path, out: &mut HashSet<PathBuf>) {
     }
 }
 
-/// Diff two snapshots and return new files and new dirs (in discovery order,
-/// dirs before their children so we can record them for ordered teardown).
 fn diff_snapshots(
     before: &HashSet<PathBuf>,
     after: &HashSet<PathBuf>,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut new_dirs: Vec<PathBuf> = Vec::new();
-    let mut new_files: Vec<PathBuf> = Vec::new();
-
-    // Collect new dirs first (shortest path = parent before child).
     let mut new_paths: Vec<&PathBuf> = after.difference(before).collect();
     new_paths.sort_by_key(|p| p.components().count());
 
+    let mut new_dirs = Vec::new();
+    let mut new_files = Vec::new();
     for p in new_paths {
         if p.is_dir() {
             new_dirs.push(p.clone());
@@ -240,7 +207,6 @@ fn resolve_deps(
 
     let build_content = fetch_build_vex(pkg_name, repos)?;
     let parsed = vex_lang::parse_vex(&build_content);
-
     for dep in vex_lang::get_values(&parsed, "dependencies") {
         if !dep.is_empty() {
             resolve_deps(&dep, repos, visited, needed)?;
@@ -250,18 +216,19 @@ fn resolve_deps(
 }
 
 fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
+    // Prefer already-extracted build.vex.
     let installed_build = format!("{}/build.vex", pkg_dir(pkg_name));
     if let Ok(content) = fs::read_to_string(&installed_build) {
         return Ok(content);
     }
 
+    // Fetch and extract to tmp dir.
     let tar = tar_path(pkg_name);
     fs::create_dir_all(vex_pkgs_dir()).map_err(|e| e.to_string())?;
 
     let mut fetched = false;
     for repo in repos {
-        let available = fetch::list_pkgs_from_url(repo);
-        if available.contains(&format!("{}.tar", pkg_name)) {
+        if fetch::list_pkgs_from_url(repo).contains(&format!("{}.tar", pkg_name)) {
             fetch::fetch_pkg_to(repo, pkg_name, &tar);
             fetched = true;
             break;
@@ -282,8 +249,13 @@ fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
     let content = fs::read_to_string(format!("{}/build.vex", tmp_dir))
         .map_err(|_| format!("build.vex missing in package '{}'", pkg_name))?;
 
-    fs::rename(&tmp_dir, pkg_dir(pkg_name))
-        .map_err(|e| format!("Failed to promote tmp dir: {}", e))?;
+    // Promote tmp dir → real pkg dir so install_pkg doesn't re-fetch.
+    // If it already exists (dirty/legacy), wipe it first.
+    let real_dir = pkg_dir(pkg_name);
+    if Path::new(&real_dir).exists() {
+        fs::remove_dir_all(&real_dir).map_err(|e| e.to_string())?;
+    }
+    fs::rename(&tmp_dir, &real_dir).map_err(|e| format!("Failed to promote tmp dir: {}", e))?;
 
     Ok(content)
 }
@@ -313,13 +285,11 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
         v
     });
 
+    // installed_pkgs() reads dirs — includes legacy installs without manifests.
     let currently_installed = installed_pkgs();
 
-    // Install missing packages.
-    let to_install: Vec<_> = needed
-        .iter()
-        .filter(|p| !currently_installed.contains(*p))
-        .collect();
+    // Anything in the closure that isn't PROPERLY installed (dir + manifest) needs installing.
+    let to_install: Vec<_> = needed.iter().filter(|p| !is_installed(p)).collect();
 
     if to_install.is_empty() {
         println!("vex: nothing to install.");
@@ -334,7 +304,7 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
         }
     }
 
-    // Remove packages not in the closure.
+    // Anything on disk (by dir) that isn't in the closure gets removed.
     let to_remove: Vec<_> = currently_installed
         .iter()
         .filter(|p| !needed.contains(*p))
@@ -348,7 +318,7 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
             to_remove.len()
         );
         for pkg in &to_remove {
-            remove_pkg(pkg);
+            remove_pkg(pkg, repos);
         }
     }
 
@@ -358,22 +328,26 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
 // ── install ───────────────────────────────────────────────────────────────────
 
 fn install_pkg(pkg_name: &str, repos: &[String]) -> Result<(), String> {
-    if is_installed(pkg_name) {
+    // If a dir exists but no manifest, it's a dirty/legacy install — wipe and redo.
+    let dir = pkg_dir(pkg_name);
+    if Path::new(&dir).exists() && !Path::new(&manifest_path(pkg_name)).exists() {
+        println!("  [reinstalling] {} (no manifest found)...", pkg_name);
+        fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    } else if is_installed(pkg_name) {
         println!("  [already installed] {}", pkg_name);
         return Ok(());
+    } else {
+        println!("  [installing] {}...", pkg_name);
     }
 
-    println!("  [installing] {}...", pkg_name);
-    let dir = pkg_dir(pkg_name);
-    let tar = tar_path(pkg_name);
-
-    fs::create_dir_all(vex_pkgs_dir()).map_err(|e| e.to_string())?;
-
+    // Fetch tarball if dir doesn't exist yet (fetch_build_vex may have already promoted it).
     if !Path::new(&dir).exists() {
+        let tar = tar_path(pkg_name);
+        fs::create_dir_all(vex_pkgs_dir()).map_err(|e| e.to_string())?;
+
         let mut fetched = false;
         for repo in repos {
-            let available = fetch::list_pkgs_from_url(repo);
-            if available.contains(&format!("{}.tar", pkg_name)) {
+            if fetch::list_pkgs_from_url(repo).contains(&format!("{}.tar", pkg_name)) {
                 fetch::fetch_pkg_to(repo, pkg_name, &tar);
                 fetched = true;
                 break;
@@ -396,7 +370,7 @@ fn install_pkg(pkg_name: &str, repos: &[String]) -> Result<(), String> {
     let parsed = vex_lang::parse_vex(&build_content);
     let commands = vex_lang::get_values(&parsed, "commands");
 
-    // Snapshot the filesystem before running any build commands.
+    // Snapshot before running build commands.
     let roots = watch_roots();
     let before = snapshot_paths(&roots);
 
@@ -418,21 +392,19 @@ fn install_pkg(pkg_name: &str, repos: &[String]) -> Result<(), String> {
         }
     }
 
-    // Snapshot after and build the manifest from the diff.
+    // Build manifest from diff.
     let after = snapshot_paths(&roots);
     let (new_dirs, new_files) = diff_snapshots(&before, &after);
 
     let mut manifest = Manifest::new();
-    // Record dirs in creation order (parent → child) so teardown can reverse to child → parent.
     for d in &new_dirs {
         manifest.record_dir(d);
     }
     for f in &new_files {
         manifest.record_file(f);
     }
+    manifest.save(&manifest_path(pkg_name))?;
 
-    let mpath = manifest_path(pkg_name);
-    manifest.save(&mpath)?;
     println!(
         "  [manifest] tracked {} file(s), {} dir(s)",
         new_files.len(),
@@ -444,29 +416,41 @@ fn install_pkg(pkg_name: &str, repos: &[String]) -> Result<(), String> {
 
 // ── remove ────────────────────────────────────────────────────────────────────
 
-fn remove_pkg(pkg_name: &str) {
+fn remove_pkg(pkg_name: &str, repos: &[String]) {
     println!("  [removing] {}...", pkg_name);
 
-    let mpath = manifest_path(pkg_name);
-    match Manifest::load(&mpath) {
+    match Manifest::load(&manifest_path(pkg_name)) {
         Ok(manifest) => {
             manifest.uninstall(pkg_name);
         }
-        Err(e) => {
-            // No manifest — package was installed before manifest support.
-            // Fall back to just removing the pkg dir and warn loudly.
-            eprintln!("  [warn] {}", e);
-            eprintln!(
-                "  [warn] no manifest for '{}'; only pkg dir will be removed.",
-                pkg_name
-            );
-            eprintln!(
-                "  [warn] files outside ~/.vex/pkgs/{} were NOT cleaned up.",
+        Err(_) => {
+            // No manifest — reinstall first to generate one, then remove properly.
+            println!(
+                "  [no manifest] reinstalling {} to generate manifest...",
                 pkg_name
             );
             let dir = pkg_dir(pkg_name);
-            if let Err(e) = fs::remove_dir_all(&dir) {
-                eprintln!("  [error removing {}]: {}", pkg_name, e);
+            let _ = fs::remove_dir_all(&dir);
+            match install_pkg(pkg_name, repos) {
+                Ok(_) => match Manifest::load(&manifest_path(pkg_name)) {
+                    Ok(manifest) => manifest.uninstall(pkg_name),
+                    Err(e) => {
+                        eprintln!("  [error] still no manifest after reinstall: {}", e);
+                        eprintln!(
+                            "  [warn] files outside ~/.vex/pkgs/{} were NOT cleaned up.",
+                            pkg_name
+                        );
+                    }
+                },
+                Err(e) => {
+                    eprintln!("  [error] reinstall failed: {}", e);
+                    eprintln!(
+                        "  [warn] files outside ~/.vex/pkgs/{} were NOT cleaned up.",
+                        pkg_name
+                    );
+                    // At least remove the pkg dir.
+                    let _ = fs::remove_dir_all(pkg_dir(pkg_name));
+                }
             }
         }
     }
@@ -499,7 +483,6 @@ pub fn build_tar(tar_name: &str, repos: &[String]) {
         }
     }
 
-    // Snapshot before build commands.
     let roots = watch_roots();
     let before = snapshot_paths(&roots);
 
@@ -518,7 +501,6 @@ pub fn build_tar(tar_name: &str, repos: &[String]) {
         }
     }
 
-    // Save manifest next to the extracted dir.
     let after = snapshot_paths(&roots);
     let (new_dirs, new_files) = diff_snapshots(&before, &after);
     let mut manifest = Manifest::new();
