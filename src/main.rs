@@ -10,7 +10,7 @@ fn main() {
 
     if args.len() < 2 {
         eprintln!("usage: vex <command>");
-        eprintln!("commands: rebuild, serve, list, version, fetch, build, postserve, help");
+        eprintln!("commands: sync, serve, list, version, fetch, build, postserve, help");
         std::process::exit(1);
     }
 
@@ -66,10 +66,10 @@ fn main() {
                 fetch::fetch_pkg_to(repo, pkg_name, &format!("{}_pkg.tar", pkg_name));
             }
         }
-        "rebuild" => {
-            println!("rebuilding packages incrementally...");
+        "sync" => {
+            println!("syncing packages incrementally...");
             install::sync(&pkgs, &repos);
-            println!("packages rebuilt.");
+            println!("packages synced.");
         }
         "version" => {
             println!("vex-pkg v0.3.6")
@@ -94,7 +94,7 @@ Commands: {{
   serve -> serve a local server at localhost:45311
   fetch <pkg> -> fetch pkg
   build <pkg>.tar -> build pkg locally 
-  rebuild -> rebuild from pkgs.vex from repos on config.vex
+  sync -> sync from pkgs.vex from repos on config.vex
   list -> list available packages for install from all repos 
   version -> version 
   portserve <port> -> serve on specific port 
