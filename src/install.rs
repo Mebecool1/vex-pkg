@@ -300,6 +300,7 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
     // -- get a version -------------------------------------------------------
     fn peek_version(pkg_name: &str, repos: &[String]) -> String {
         let tar = tar_path(pkg_name);
+        fs::remove_file(&tar).ok(); // nuke any stale tar
         for repo in repos {
             if fetch::list_pkgs_from_url(repo).contains(&format!("{}.tar", pkg_name)) {
                 fetch::fetch_pkg_to(repo, pkg_name, &tar);
