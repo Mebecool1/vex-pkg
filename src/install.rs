@@ -52,12 +52,14 @@ enum ManifestEntry {
 }
 
 struct Manifest {
+    version: String,
     entries: Vec<ManifestEntry>,
 }
 
 impl Manifest {
-    fn new() -> Self {
+    fn new(version: String) -> Self {
         Self {
+            version,
             entries: Vec::new(),
         }
     }
@@ -71,23 +73,26 @@ impl Manifest {
     }
 
     fn save(&self, path: &str) -> Result<(), String> {
-        let lines: Vec<String> = self
-            .entries
-            .iter()
-            .map(|e| match e {
-                ManifestEntry::File(p) => format!("F {}", p.display()),
-                ManifestEntry::Dir(p) => format!("D {}", p.display()),
-            })
-            .collect();
+        let mut lines = vec![format!("V {}", self.version)];
+        lines.extend(self.entries.iter().map(|e| match e {
+            ManifestEntry::File(p) => format!("F {}", p.display()),
+            ManifestEntry::Dir(p) => format!("D {}", p.display()),
+        }));
         fs::write(path, lines.join("\n")).map_err(|e| format!("Failed to write manifest: {}", e))
     }
 
     fn load(path: &str) -> Result<Self, String> {
         let content =
             fs::read_to_string(path).map_err(|_| format!("No manifest found at {}", path))?;
-        let entries = content
-            .lines()
-            .filter(|l| l.len() > 2)
+        let mut lines = content.lines().filter(|l| l.len() > 2);
+
+        let version = lines
+            .next()
+            .filter(|l| l.starts_with('V'))
+            .map(|l| l[2..].to_string())
+            .unwrap_or_default();
+
+        let entries = lines
             .map(|l| {
                 let p = PathBuf::from(&l[2..]);
                 if l.starts_with('D') {
@@ -97,9 +102,9 @@ impl Manifest {
                 }
             })
             .collect();
-        Ok(Self { entries })
-    }
 
+        Ok(Self { entries, version })
+    }
     fn uninstall(&self, pkg_name: &str) {
         for entry in self.entries.iter().rev() {
             match entry {
@@ -292,7 +297,27 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
         "vex: resolving dependency closure for {} top-level package(s)...",
         desired_pkgs.len()
     );
-
+    // -- get a version -------------------------------------------------------
+    fn peek_version(pkg_name: &str, repos: &[String]) -> String {
+        let tar = tar_path(pkg_name);
+        for repo in repos {
+            if fetch::list_pkgs_from_url(repo).contains(&format!("{}.tar", pkg_name)) {
+                fetch::fetch_pkg_to(repo, pkg_name, &tar);
+                break;
+            }
+        }
+        let out = std::process::Command::new("tar")
+            .args(["-xOf", &tar, "build.vex"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default();
+        fs::remove_file(&tar).ok();
+        vex_lang::get_values(&vex_lang::parse_vex(&out), "version")
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+    }
     let mut visited = HashSet::new();
     let mut needed: HashSet<String> = HashSet::new();
     // ── fetch build.vex ───────────────────────────────────────────────────────────
@@ -375,9 +400,22 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
     // installed_pkgs() reads dirs — includes legacy installs without manifests.
     let currently_installed = installed_pkgs();
 
-    // Anything in the closure that isn't PROPERLY installed (dir + manifest) needs installing.
-    let to_install: Vec<_> = needed.iter().filter(|p| !is_installed(p)).collect();
-
+    // Anything in the closure that isn't PROPERLY installed (dir + manifest) or is outdated needs installing.
+    let to_install: Vec<_> = needed
+        .iter()
+        .filter(|p| {
+            if !is_installed(p) {
+                return true;
+            }
+            // check version mismatch
+            let local_version = Manifest::load(&manifest_path(p))
+                .ok()
+                .map(|m| m.version)
+                .unwrap_or_default();
+            let remote_version = peek_version(p, repos);
+            local_version != remote_version
+        })
+        .collect();
     if to_install.is_empty() {
         println!("vex: nothing to install.");
     } else {
@@ -456,6 +494,14 @@ fn install_pkg(pkg_name: &str, repos: &[String]) -> Result<(), String> {
         .map_err(|_| format!("build.vex missing for '{}'", pkg_name))?;
     let parsed = vex_lang::parse_vex(&build_content);
     let commands = vex_lang::get_values(&parsed, "commands");
+    let version = vex_lang::get_values(&parsed, "version")
+        .into_iter()
+        .next()
+        .expect("Missing version field in build.vex");
+    let _name = vex_lang::get_values(&parsed, "name")
+        .into_iter()
+        .next()
+        .expect("Missing name field in build.vex");
 
     // Snapshot before running build commands.
     let roots = watch_roots();
@@ -483,7 +529,7 @@ fn install_pkg(pkg_name: &str, repos: &[String]) -> Result<(), String> {
     let after = snapshot_paths(&roots);
     let (new_dirs, new_files) = diff_snapshots(&before, &after, Some(Path::new(&dir)));
 
-    let mut manifest = Manifest::new();
+    let mut manifest = Manifest::new((*version).to_string());
     for d in &new_dirs {
         manifest.record_dir(d);
     }
@@ -550,7 +596,10 @@ pub fn build_tar(tar_name: &str, repos: &[String]) {
         .into_iter()
         .next()
         .expect("build.vex is missing a 'name' field");
-
+    let version = vex_lang::get_values(&parsed, "version")
+        .into_iter()
+        .next()
+        .expect("build.vex misses a 'version' field");
     // Install dependencies before touching the filesystem snapshot.
     for dep in vex_lang::get_values(&parsed, "dependencies") {
         if !dep.is_empty() {
@@ -593,7 +642,7 @@ pub fn build_tar(tar_name: &str, repos: &[String]) {
     // Exclude the pkg dir itself — we don't want build.vex etc. in the manifest.
     let (new_dirs, new_files) = diff_snapshots(&before, &after, Some(Path::new(&real_dir)));
 
-    let mut manifest = Manifest::new();
+    let mut manifest = Manifest::new(version);
     for d in &new_dirs {
         manifest.record_dir(d);
     }
