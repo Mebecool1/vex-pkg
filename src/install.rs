@@ -432,9 +432,16 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
     } else {
         println!("vex: installing {} package(s)...", to_install.len());
         for pkg in &to_install {
-            if let Err(e) = install_pkg(pkg, repos) {
+            if let Err(e) = install_pkg(pkg, repos, false) {
                 eprintln!("error installing '{}': {}", pkg, e);
                 eprintln!("aborting sync — some packages may be partially installed.");
+                return;
+            }
+        }
+        for pkg in &to_update {
+            if let Err(e) = install_pkg(pkg, repos, true) {
+                eprintln!("error updating '{}: {}", pkg, e);
+                eprintln!("aborting sync - some packages may be partially installed.");
                 return;
             }
         }
@@ -463,13 +470,13 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
 
 // ── install ───────────────────────────────────────────────────────────────────
 
-fn install_pkg(pkg_name: &str, repos: &[String]) -> Result<(), String> {
+fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), String> {
     // If a dir exists but no manifest, it's a dirty/legacy install — wipe and redo.
     let dir = pkg_dir(pkg_name);
     if Path::new(&dir).exists() && !Path::new(&manifest_path(pkg_name)).exists() {
         println!("  [reinstalling] {} (no manifest found)...", pkg_name);
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-    } else if is_installed(pkg_name) {
+    } else if is_installed(pkg_name) && !force {
         println!("  [already installed] {}", pkg_name);
         return Ok(());
     } else {
@@ -615,7 +622,7 @@ pub fn build_tar(tar_name: &str, repos: &[String]) {
     for dep in vex_lang::get_values(&parsed, "dependencies") {
         if !dep.is_empty() {
             println!("  [dep] installing: {}", dep);
-            if let Err(e) = install_pkg(&dep, repos) {
+            if let Err(e) = install_pkg(&dep, repos, false) {
                 eprintln!("error installing dep '{}': {}", dep, e);
                 let _ = fs::remove_dir_all(&tmp_dir);
                 return;
