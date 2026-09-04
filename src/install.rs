@@ -326,6 +326,15 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
         );
         version
     }
+
+    // does it even need an update?
+    fn needs_update(pkg_name: &str, repos: &[String]) -> bool {
+        let local = Manifest::load(&manifest_path(pkg_name))
+            .map(|m| m.version)
+            .unwrap_or_default();
+        let remote = peek_version(pkg_name, repos);
+        local != remote
+    }
     let mut visited = HashSet::new();
     let mut needed: HashSet<String> = HashSet::new();
     // ── fetch build.vex ───────────────────────────────────────────────────────────
@@ -411,18 +420,7 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
     // Anything in the closure that isn't PROPERLY installed (dir + manifest) or is outdated needs installing.
     let to_install: Vec<_> = needed
         .iter()
-        .filter(|p| {
-            if !is_installed(p) {
-                return true;
-            }
-            // check version mismatch
-            let local_version = Manifest::load(&manifest_path(p))
-                .ok()
-                .map(|m| m.version)
-                .unwrap_or_default();
-            let remote_version = peek_version(p, repos);
-            local_version != remote_version
-        })
+        .filter(|p| !is_installed(p) || needs_update(p, repos))
         .collect();
     if to_install.is_empty() {
         println!("vex: nothing to install.");

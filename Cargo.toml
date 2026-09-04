@@ -1,6 +1,6 @@
 [package]
 name = "vex-pkg"
-version = "0.5.6"
+version = "0.5.7"
 edition = "2024"
 description = "A tiny decentralized package manager that anyone can host a server for easily.."
 exclude = [
