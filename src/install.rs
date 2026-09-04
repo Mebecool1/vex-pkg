@@ -418,10 +418,15 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
     let currently_installed = installed_pkgs();
 
     // Anything in the closure that isn't PROPERLY installed (dir + manifest) or is outdated needs installing.
+
     let to_install: Vec<_> = needed
         .iter()
         .filter(|p| !is_installed(p) || needs_update(p, repos))
         .collect();
+    let to_update: Vec<_> = needed.iter().filter(|p| needs_update(p, repos)).collect();
+    println!("outdated things: {:?}", to_update);
+    println!("things needed to be installed: {:?}", to_update);
+
     if to_install.is_empty() {
         println!("vex: nothing to install.");
     } else {
