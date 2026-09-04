@@ -300,24 +300,31 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
     // -- get a version -------------------------------------------------------
     fn peek_version(pkg_name: &str, repos: &[String]) -> String {
         let tar = tar_path(pkg_name);
-        fs::remove_file(&tar).ok(); // nuke any stale tar
+        fs::remove_file(&tar).ok();
         for repo in repos {
             if fetch::list_pkgs_from_url(repo).contains(&format!("{}.tar", pkg_name)) {
                 fetch::fetch_pkg_to(repo, pkg_name, &tar);
                 break;
             }
         }
-        let out = std::process::Command::new("tar")
-            .args(["-xOf", &tar, "build.vex"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .unwrap_or_default();
+        let tmp = format!("{}/.vex/.tmp_peek_{}", home(), pkg_name);
+        fs::create_dir_all(&tmp).ok();
+        std::process::Command::new("tar")
+            .args(["-xf", &tar, "-C", &tmp])
+            .status()
+            .ok();
+        let content = fs::read_to_string(format!("{}/build.vex", tmp)).unwrap_or_default();
+        fs::remove_dir_all(&tmp).ok();
         fs::remove_file(&tar).ok();
-        vex_lang::get_values(&vex_lang::parse_vex(&out), "version")
+        let version = vex_lang::get_values(&vex_lang::parse_vex(&content), "version")
             .into_iter()
             .next()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        println!(
+            "newest version available of package {} is {}",
+            pkg_name, version
+        );
+        version
     }
     let mut visited = HashSet::new();
     let mut needed: HashSet<String> = HashSet::new();
