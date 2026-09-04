@@ -153,6 +153,8 @@ fn watch_roots() -> Vec<PathBuf> {
         PathBuf::from(format!("{}/.config", h)),
         PathBuf::from(format!("{}/.bin", h)),
         PathBuf::from(format!("{}/bin", h)),
+        PathBuf::from(format!("{}/.vex/lib", h)),
+        PathBuf::from(format!("{}/.vex/bin", h)),
     ]
 }
 
