@@ -10,7 +10,9 @@ fn main() {
 
     if args.len() < 2 {
         eprintln!("usage: vex <command>");
-        eprintln!("commands: sync, serve, list, version, fetch, build, postserve, help");
+        eprintln!(
+            "commands: sync, serve, list, version, fetch, build, postserve, help, exists, search"
+        );
         std::process::exit(1);
     }
 
@@ -84,6 +86,50 @@ fn main() {
             install::build_tar(pkg, &repos);
             println!("package built.")
         }
+        "exists" => {
+            if args.len() < 3 {
+                eprintln!("usage: vex exists <name>");
+                std::process::exit(1);
+            }
+            let pkg = &args[2];
+            println!("searching for package..");
+            let mut list: Vec<String> = Vec::new();
+            for repo in &repos {
+                list.extend(fetch::list_pkgs_from_url(repo));
+            }
+
+            if list
+                .iter()
+                .any(|p| p.trim_end_matches(".tar") == pkg.as_str())
+            {
+                println!(
+                    "{} was found. You can edit the pkgs.vex if you want to install it.",
+                    pkg
+                );
+            } else {
+                eprintln!(
+                    "{} was not found. Please check the name or add the repo.",
+                    pkg
+                );
+                std::process::exit(1);
+            }
+        }
+        "search" => {
+            if args.len() < 3 {
+                eprintln!("please provide the search argument.");
+                std::process::exit(1);
+            }
+            let query = &args[2];
+            println!("searching for {}", query);
+            for repo in &repos {
+                for pkg in fetch::list_pkgs_from_url(repo) {
+                    let name = pkg.trim_end_matches(".tar");
+                    if name.contains(query.as_str()) {
+                        println!("{} ({})", name, repo);
+                    }
+                }
+            }
+        }
         "help" => {
             println!(
                 "
@@ -97,7 +143,9 @@ Commands: {{
   sync -> sync from pkgs.vex from repos on config.vex
   list -> list available packages for install from all repos 
   version -> version 
-  portserve <port> -> serve on specific port 
+  portserve <port> -> serve on specific port
+  exists <name> -> check if a package exists in your repos
+  search <name> -> search for a specific package (contains search)
 }}
 
 vex_lang syntax: (.vex) {{

@@ -425,7 +425,10 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
         .iter()
         .filter(|p| !is_installed(p) || needs_update(p, repos))
         .collect();
-    let to_update: Vec<_> = needed.iter().filter(|p| needs_update(p, repos)).collect();
+    let to_update: Vec<_> = needed
+        .iter()
+        .filter(|p| is_installed(p) && needs_update(p, repos))
+        .collect();
     println!("outdated things: {:?}", to_update);
     println!("things needed to be installed: {:?}", to_update);
 
@@ -548,7 +551,8 @@ fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), Stri
     // Build manifest from diff.
     let after = snapshot_paths(&roots);
     let (new_dirs, new_files) = diff_snapshots(&before, &after, Some(Path::new(&dir)));
-
+    println!("  [debug] new_dirs: {:?}", new_dirs);
+    println!("  [debug] new_files: {:?}", new_files);
     let mut manifest = Manifest::new((*version).to_string());
     for d in &new_dirs {
         manifest.record_dir(d);
