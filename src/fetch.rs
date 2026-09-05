@@ -1,9 +1,5 @@
 use std::fs;
 use std::io::copy;
-pub fn fetch_pkg(url: &str, pkg_name: &str) {
-    let dest = format!("{}_pkg.tar", pkg_name);
-    fetch_pkg_to(url, pkg_name, &dest);
-}
 
 pub fn list_pkgs_from_url(url: &str) -> Vec<String> {
     let endpoint = format!("{}/vex/pkgs/", url.trim_end_matches('/'));

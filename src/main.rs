@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 mod fetch;
 mod install;
+mod print;
 mod serve;
 mod vex_lang;
 // start
@@ -31,7 +32,7 @@ fn main() {
     }
     let repos = vex_lang::get_values(&parsed_config, "repositories");
     let pkgs = vex_lang::get_values(&parsed_pkgs, "packages");
-    println!("Loaded all packages and repos...;");
+    print::vex_print("Loaded", "configs and packages");
     match args[1].as_str() {
         "portserve" => {
             if args.len() < 3 {
@@ -69,9 +70,10 @@ fn main() {
             }
         }
         "sync" => {
-            println!("syncing packages incrementally...");
+            print::vex_print("Syncing", "packages incrementally");
+
             install::sync(&pkgs, &repos);
-            println!("packages synced.");
+            print::vex_print("Synced", "packages");
         }
         "version" => {
             println!("vex-pkg v0.3.6")

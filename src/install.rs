@@ -1,4 +1,5 @@
 use crate::fetch;
+use crate::print;
 use crate::vex_lang;
 use std::collections::HashSet;
 use std::env;
@@ -105,14 +106,17 @@ impl Manifest {
 
         Ok(Self { entries, version })
     }
+
     fn uninstall(&self, pkg_name: &str) {
         for entry in self.entries.iter().rev() {
             match entry {
                 ManifestEntry::File(p) => {
                     if p.exists() {
                         match fs::remove_file(p) {
-                            Ok(_) => println!("  [rm file] {}", p.display()),
-                            Err(e) => eprintln!("  [warn] could not remove {}: {}", p.display(), e),
+                            Ok(_) => print::vex_print("Removed", &format!("{}", p.display())),
+                            Err(e) => {
+                                print::vex_warn(&format!("could not remove {}: {}", p.display(), e))
+                            }
                         }
                     }
                 }
@@ -120,25 +124,24 @@ impl Manifest {
                     if let Ok(mut rd) = fs::read_dir(p) {
                         if rd.next().is_none() {
                             match fs::remove_dir(p) {
-                                Ok(_) => println!("  [rm dir] {}", p.display()),
-                                Err(e) => eprintln!(
-                                    "  [warn] could not remove dir {}: {}",
+                                Ok(_) => print::vex_print("Removed", &format!("{}", p.display())),
+                                Err(e) => print::vex_warn(&format!(
+                                    "could not remove dir {}: {}",
                                     p.display(),
                                     e
-                                ),
+                                )),
                             }
                         } else {
-                            println!("  [skip dir, not empty] {}", p.display());
+                            print::vex_warn(&format!("skipping non-empty dir {}", p.display()));
                         }
                     }
                 }
             }
         }
-        // Remove the pkg source dir itself.
         if let Err(e) = fs::remove_dir_all(pkg_dir(pkg_name)) {
-            eprintln!("  [warn] could not remove pkg dir: {}", e);
+            print::vex_warn(&format!("could not remove pkg dir: {}", e));
         } else {
-            println!("  [rm pkg dir] {}", pkg_dir(pkg_name));
+            print::vex_print("Removed", &format!("pkg dir for {}", pkg_name));
         }
     }
 }
@@ -206,6 +209,7 @@ fn diff_snapshots(
     }
     (new_dirs, new_files)
 }
+
 // ── dependency resolution ─────────────────────────────────────────────────────
 
 fn resolve_deps(
@@ -233,7 +237,6 @@ fn resolve_deps(
 // ── fetch build.vex ───────────────────────────────────────────────────────────
 
 fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
-    // Prefer already-extracted build.vex.
     let installed_build = format!("{}/build.vex", pkg_dir(pkg_name));
     if let Ok(content) = fs::read_to_string(&installed_build) {
         return Ok(content);
@@ -277,7 +280,6 @@ fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
         format!("build.vex missing in package '{}'", pkg_name)
     })?;
 
-    // Promote tmp dir → real pkg dir.
     let real_dir = pkg_dir(pkg_name);
     if Path::new(&real_dir).exists() {
         fs::remove_dir_all(&real_dir).map_err(|e| {
@@ -292,14 +294,12 @@ fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
 
     Ok(content)
 }
+
 // ── state machine: sync ───────────────────────────────────────────────────────
 
 pub fn sync(desired_pkgs: &[String], repos: &[String]) {
-    println!(
-        "vex: resolving dependency closure for {} top-level package(s)...",
-        desired_pkgs.len()
-    );
-    // -- get a version -------------------------------------------------------
+    print::vex_print("Resolving", "dependency closure");
+
     fn peek_version(pkg_name: &str, repos: &[String]) -> String {
         let tar = tar_path(pkg_name);
         fs::remove_file(&tar).ok();
@@ -318,18 +318,12 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
         let content = fs::read_to_string(format!("{}/build.vex", tmp)).unwrap_or_default();
         fs::remove_dir_all(&tmp).ok();
         fs::remove_file(&tar).ok();
-        let version = vex_lang::get_values(&vex_lang::parse_vex(&content), "version")
+        vex_lang::get_values(&vex_lang::parse_vex(&content), "version")
             .into_iter()
             .next()
-            .unwrap_or_default();
-        println!(
-            "newest version available of package {} is {}",
-            pkg_name, version
-        );
-        version
+            .unwrap_or_default()
     }
 
-    // does it even need an update?
     fn needs_update(pkg_name: &str, repos: &[String]) -> bool {
         let local = Manifest::load(&manifest_path(pkg_name))
             .map(|m| m.version)
@@ -337,158 +331,79 @@ pub fn sync(desired_pkgs: &[String], repos: &[String]) {
         let remote = peek_version(pkg_name, repos);
         local != remote
     }
+
     let mut visited = HashSet::new();
     let mut needed: HashSet<String> = HashSet::new();
-    // ── fetch build.vex ───────────────────────────────────────────────────────────
-
-    fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
-        // Prefer already-extracted build.vex.
-        let installed_build = format!("{}/build.vex", pkg_dir(pkg_name));
-        if let Ok(content) = fs::read_to_string(&installed_build) {
-            return Ok(content);
-        }
-
-        let tar = tar_path(pkg_name);
-        fs::create_dir_all(vex_pkgs_dir()).map_err(|e| e.to_string())?;
-
-        let mut fetched = false;
-        for repo in repos {
-            if fetch::list_pkgs_from_url(repo).contains(&format!("{}.tar", pkg_name)) {
-                fetch::fetch_pkg_to(repo, pkg_name, &tar);
-                fetched = true;
-                break;
-            }
-        }
-        if !fetched {
-            return Err(format!("package '{}' not found in any repo", pkg_name));
-        }
-
-        let tmp_dir = format!("{}/.vex/.tmp_{}", home(), pkg_name);
-        fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
-
-        let extract_status = std::process::Command::new("tar")
-            .args(["-xf", &tar, "-C", &tmp_dir])
-            .status()
-            .map_err(|e| {
-                let _ = fs::remove_dir_all(&tmp_dir);
-                format!("Failed to run tar: {}", e)
-            })?;
-
-        if !extract_status.success() {
-            let _ = fs::remove_dir_all(&tmp_dir);
-            return Err(format!("tar failed for package '{}'", pkg_name));
-        }
-
-        fs::remove_file(&tar).ok();
-
-        let content = fs::read_to_string(format!("{}/build.vex", tmp_dir)).map_err(|_| {
-            let _ = fs::remove_dir_all(&tmp_dir);
-            format!("build.vex missing in package '{}'", pkg_name)
-        })?;
-
-        // Promote tmp dir → real pkg dir.
-        let real_dir = pkg_dir(pkg_name);
-        if Path::new(&real_dir).exists() {
-            fs::remove_dir_all(&real_dir).map_err(|e| {
-                let _ = fs::remove_dir_all(&tmp_dir);
-                e.to_string()
-            })?;
-        }
-        fs::rename(&tmp_dir, &real_dir).map_err(|e| {
-            let _ = fs::remove_dir_all(&tmp_dir);
-            format!("Failed to promote tmp dir: {}", e)
-        })?;
-
-        Ok(content)
-    }
 
     for pkg in desired_pkgs {
         if let Err(e) = resolve_deps(pkg, repos, &mut visited, &mut needed) {
-            eprintln!("error: {}", e);
-            eprintln!("aborting sync — system state unchanged.");
+            print::vex_error(&e);
+            print::vex_error("aborting sync — system state unchanged.");
             return;
         }
     }
 
-    println!("vex: closure contains {} package(s): {:?}", needed.len(), {
-        let mut v: Vec<_> = needed.iter().collect();
-        v.sort();
-        v
-    });
+    print::vex_print("Resolved", &format!("{} package(s)", needed.len()));
 
-    // installed_pkgs() reads dirs — includes legacy installs without manifests.
     let currently_installed = installed_pkgs();
 
-    // Anything in the closure that isn't PROPERLY installed (dir + manifest) or is outdated needs installing.
-
-    let to_install: Vec<_> = needed
-        .iter()
-        .filter(|p| !is_installed(p) || needs_update(p, repos))
-        .collect();
+    let to_install: Vec<_> = needed.iter().filter(|p| !is_installed(p)).collect();
     let to_update: Vec<_> = needed
         .iter()
         .filter(|p| is_installed(p) && needs_update(p, repos))
         .collect();
-    println!("outdated things: {:?}", to_update);
-    println!("things needed to be installed: {:?}", to_update);
 
-    if to_install.is_empty() {
-        println!("vex: nothing to install.");
+    if to_install.is_empty() && to_update.is_empty() {
+        print::vex_print("Fresh", "nothing to install or update.");
     } else {
-        println!("vex: installing {} package(s)...", to_install.len());
         for pkg in &to_install {
             if let Err(e) = install_pkg(pkg, repos, false) {
-                eprintln!("error installing '{}': {}", pkg, e);
-                eprintln!("aborting sync — some packages may be partially installed.");
+                print::vex_error(&format!("error installing '{}': {}", pkg, e));
+                print::vex_error("aborting sync — some packages may be partially installed.");
                 return;
             }
         }
         for pkg in &to_update {
             if let Err(e) = install_pkg(pkg, repos, true) {
-                eprintln!("error updating '{}: {}", pkg, e);
-                eprintln!("aborting sync - some packages may be partially installed.");
+                print::vex_error(&format!("error updating '{}': {}", pkg, e));
+                print::vex_error("aborting sync — some packages may be partially installed.");
                 return;
             }
         }
     }
 
-    // Anything on disk (by dir) that isn't in the closure gets removed.
     let to_remove: Vec<_> = currently_installed
         .iter()
         .filter(|p| !needed.contains(*p))
         .collect();
 
     if to_remove.is_empty() {
-        println!("vex: nothing to remove.");
+        print::vex_print("Fresh", "nothing to remove.");
     } else {
-        println!(
-            "vex: removing {} package(s) not in desired set...",
-            to_remove.len()
-        );
         for pkg in &to_remove {
             remove_pkg(pkg, repos);
         }
     }
 
-    println!("vex: sync complete. system matches desired state.");
+    print::vex_print("Finished", "sync");
 }
 
 // ── install ───────────────────────────────────────────────────────────────────
 
 fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), String> {
-    // If a dir exists but no manifest, it's a dirty/legacy install — wipe and redo.
     let dir = pkg_dir(pkg_name);
     if Path::new(&dir).exists() && !Path::new(&manifest_path(pkg_name)).exists() {
-        println!("  [reinstalling] {} (no manifest found)...", pkg_name);
+        print::vex_warn(&format!("{} has no manifest, reinstalling", pkg_name));
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     } else if is_installed(pkg_name) && !force {
-        println!("  [already installed] {}", pkg_name);
+        print::vex_print("Fresh", pkg_name);
         return Ok(());
+    } else if force {
+        print::vex_print("Updating", pkg_name);
     } else {
-        println!("  [installing] {}...", pkg_name);
+        print::vex_print("Installing", pkg_name);
     }
 
-    // Fetch tarball if dir doesn't exist yet (fetch_build_vex may have already promoted it).
     if !Path::new(&dir).exists() {
         let tar = tar_path(pkg_name);
         fs::create_dir_all(vex_pkgs_dir()).map_err(|e| e.to_string())?;
@@ -521,17 +436,12 @@ fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), Stri
         .into_iter()
         .next()
         .expect("Missing version field in build.vex");
-    let _name = vex_lang::get_values(&parsed, "name")
-        .into_iter()
-        .next()
-        .expect("Missing name field in build.vex");
 
-    // Snapshot before running build commands.
     let roots = watch_roots();
     let before = snapshot_paths(&roots);
 
     for cmd in &commands {
-        println!("    $ {}", cmd);
+        print::vex_print("Running", cmd);
         let status = std::process::Command::new("sh")
             .arg("-c")
             .arg(cmd)
@@ -548,11 +458,9 @@ fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), Stri
         }
     }
 
-    // Build manifest from diff.
     let after = snapshot_paths(&roots);
     let (new_dirs, new_files) = diff_snapshots(&before, &after, Some(Path::new(&dir)));
-    println!("  [debug] new_dirs: {:?}", new_dirs);
-    println!("  [debug] new_files: {:?}", new_files);
+
     let mut manifest = Manifest::new((*version).to_string());
     for d in &new_dirs {
         manifest.record_dir(d);
@@ -562,44 +470,38 @@ fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), Stri
     }
     manifest.save(&manifest_path(pkg_name))?;
 
-    println!(
-        "  [manifest] tracked {} file(s), {} dir(s)",
-        new_files.len(),
-        new_dirs.len()
-    );
-    println!("  [installed] {}", pkg_name);
+    print::vex_print("Installed", &format!("{} v{}", pkg_name, version));
     Ok(())
 }
 
 // ── remove ────────────────────────────────────────────────────────────────────
 
 fn remove_pkg(pkg_name: &str, _repos: &[String]) {
-    println!("  [removing] {}...", pkg_name);
+    print::vex_print("Removing", pkg_name);
 
     match Manifest::load(&manifest_path(pkg_name)) {
         Ok(manifest) => {
             manifest.uninstall(pkg_name);
         }
         Err(_) => {
-            eprintln!(
-                "  [warn] no manifest for '{}' — removing pkg dir only.",
+            print::vex_warn(&format!(
+                "no manifest for '{}' — removing pkg dir only.",
                 pkg_name
-            );
-            eprintln!(
-                "  [warn] files installed outside ~/.vex/pkgs/{} were NOT cleaned up.",
+            ));
+            print::vex_warn(&format!(
+                "files installed outside ~/.vex/pkgs/{} were NOT cleaned up.",
                 pkg_name
-            );
+            ));
             let _ = fs::remove_dir_all(pkg_dir(pkg_name));
         }
     }
 
-    println!("  [removed] {}", pkg_name);
+    print::vex_print("Removed", pkg_name);
 }
 
 // ── local tarball install ─────────────────────────────────────────────────────
 
 pub fn build_tar(tar_name: &str, repos: &[String]) {
-    // Peek at build.vex without committing to a final location yet.
     let tmp_dir = format!("{}/.vex/.tmp_build_tar", home());
     if Path::new(&tmp_dir).exists() {
         fs::remove_dir_all(&tmp_dir).expect("Failed to clean stale tmp dir");
@@ -615,7 +517,6 @@ pub fn build_tar(tar_name: &str, repos: &[String]) {
         fs::read_to_string(format!("{}/build.vex", tmp_dir)).expect("Failed to read build.vex");
     let parsed = vex_lang::parse_vex(&build_content);
 
-    // Get the package name from build.vex so we can place it correctly.
     let pkg_name = vex_lang::get_values(&parsed, "name")
         .into_iter()
         .next()
@@ -624,20 +525,18 @@ pub fn build_tar(tar_name: &str, repos: &[String]) {
         .into_iter()
         .next()
         .expect("build.vex misses a 'version' field");
-    // Install dependencies before touching the filesystem snapshot.
+
     for dep in vex_lang::get_values(&parsed, "dependencies") {
         if !dep.is_empty() {
-            println!("  [dep] installing: {}", dep);
+            print::vex_print("Installing", &format!("dep {}", dep));
             if let Err(e) = install_pkg(&dep, repos, false) {
-                eprintln!("error installing dep '{}': {}", dep, e);
+                print::vex_error(&format!("error installing dep '{}': {}", dep, e));
                 let _ = fs::remove_dir_all(&tmp_dir);
                 return;
             }
         }
     }
 
-    // Move tmp → real pkg dir before running commands so CWD is stable
-    // and is_installed() works correctly afterward.
     let real_dir = pkg_dir(&pkg_name);
     if Path::new(&real_dir).exists() {
         fs::remove_dir_all(&real_dir).expect("Failed to wipe existing pkg dir");
@@ -648,22 +547,21 @@ pub fn build_tar(tar_name: &str, repos: &[String]) {
     let before = snapshot_paths(&roots);
 
     for cmd in vex_lang::get_values(&parsed, "commands") {
-        println!("    $ {}", cmd);
+        print::vex_print("Running", &cmd);
         let status = std::process::Command::new("sh")
             .arg("-c")
             .arg(&cmd)
-            .current_dir(&real_dir) // run from the real pkg dir
+            .current_dir(&real_dir)
             .status()
             .expect("Failed to run command");
 
         if !status.success() {
-            eprintln!("  [error] command failed: {}", cmd);
+            print::vex_error(&format!("command failed: {}", cmd));
             return;
         }
     }
 
     let after = snapshot_paths(&roots);
-    // Exclude the pkg dir itself — we don't want build.vex etc. in the manifest.
     let (new_dirs, new_files) = diff_snapshots(&before, &after, Some(Path::new(&real_dir)));
 
     let mut manifest = Manifest::new(version);
@@ -674,14 +572,8 @@ pub fn build_tar(tar_name: &str, repos: &[String]) {
         manifest.record_file(f);
     }
     if let Err(e) = manifest.save(&manifest_path(&pkg_name)) {
-        eprintln!("[warn] could not save manifest: {}", e);
-    } else {
-        println!(
-            "  [manifest] tracked {} file(s), {} dir(s)",
-            new_files.len(),
-            new_dirs.len()
-        );
+        print::vex_warn(&format!("could not save manifest: {}", e));
     }
 
-    println!("  [installed] {} (from local tarball)", pkg_name);
+    print::vex_print("Installed", &format!("{} (from local tarball)", pkg_name));
 }
