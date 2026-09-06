@@ -7,6 +7,7 @@ mod lockfile;
 mod print;
 mod serve;
 mod vex_lang;
+use colored::Colorize;
 // start
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -14,17 +15,28 @@ fn main() {
     if args.len() < 2 {
         eprintln!("usage: vex <command>");
         eprintln!(
-            "commands: sync, serve, list, version, fetch, build, postserve, help, exists, search"
+            "commands: sync, serve, list, version, fetch, build, postserve, help, exists, search, refresh, add, remove"
         );
         std::process::exit(1);
     }
 
     let home = env::var("HOME").expect("Failed to get HOME environment variable");
-    let pkgs_content = fs::read_to_string(format!("{}/.config/vex/pkgs.vex", home))
-        .expect("Failed to read pkgs.vex");
-    let config_content = fs::read_to_string(format!("{}/.config/vex/config.vex", home))
-        .expect("Failed to read config.vex");
+    let pkgs_path = format!("{}/.config/vex/pkgs.vex", home);
+    let config_path = format!("{}/.config/vex/config.vex", home);
 
+    let pkgs_content = fs::read_to_string(&pkgs_path).unwrap_or_else(|_| {
+        let default = "packages {\n}\n".to_string();
+        fs::create_dir_all(format!("{}/.config/vex", home)).ok();
+        fs::write(&pkgs_path, &default).ok();
+        default
+    });
+
+    let config_content = fs::read_to_string(&config_path).unwrap_or_else(|_| {
+        let default = "repositories {\n}\nrefresh-time {\n  \"24\"\n}\n".to_string();
+        fs::create_dir_all(format!("{}/.config/vex", home)).ok();
+        fs::write(&config_path, &default).ok();
+        default
+    });
     let parsed_pkgs = vex_lang::parse_vex(&pkgs_content);
     let parsed_config = vex_lang::parse_vex(&config_content);
     let is_local_vc = vex_lang::get_values(&parsed_config, "local");
@@ -80,7 +92,12 @@ fn main() {
             install::sync(&pkgs, &repos, ttl, locked);
         }
         "version" => {
-            println!("vex-pkg v0.10.3")
+            println!(
+                "    vex-pkg v1.0.0 ({} {}) — {} packages installed",
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                install::get_installed_pkgs().len()
+            );
         }
         "build" => {
             if args.len() < 3 {
@@ -180,6 +197,33 @@ fn main() {
             }
             install::remove_from_pkgs(&args[2]);
         }
+        "outdated" => {
+            for pkg in &pkgs {
+                if !install::is_installed(pkg) {
+                    continue;
+                }
+                let local = install::local_version(pkg);
+                let remote = install::remote_version(pkg, &repos, ttl);
+                if local != remote {
+                    println!("{}: {} -> {}", pkg, local, remote);
+                }
+            }
+        }
+        "specificupdate" => {
+            if args.len() < 3 {
+                eprintln!("usage: vex specificupdate <package_name>");
+                std::process::exit(1);
+            }
+            print::vex_warn(
+                "updating a single package may cause dependency version mismatches — run vex sync after if things break",
+            );
+            install::upgrade(&args[2], &repos, ttl);
+        }
+        "list-installed" => {
+            for pkg in install::get_installed_pkgs() {
+                println!("       {}", pkg.red().bold());
+            }
+        }
         "help" => {
             println!(
                 "
@@ -196,6 +240,8 @@ Commands: {{
   portserve <port> -> serve on specific port
   exists <name> -> check if a package exists in your repos
   search <name> -> search for a specific package (contains search)
+  refresh -> invalidate all cache 
+  add/remove <pkg> -> add or remove a pkg from the pkgs.vex config. vex sync is manually required afterward.
 }}
 
 vex_lang syntax: (.vex) {{
@@ -237,9 +283,11 @@ all .tar within current directory will be served on portserve and serve.
 
 the .tar must have build.vex within their immediate root.
 
+
 example :
 
 foo.tar / 
+  
   build.vex 
   src/
     main.rs 
@@ -250,20 +298,20 @@ foo.tar /
 
 example build.vex :
 ```
-// ignored and optional
+
 name {{
   \"sample\"
 }}
-// ignored and optional 
+
 version {{
   \"0.1.0\"
 }}
-// optional if you have none but not ignored 
+
 dependencies {{
   \"xenon\"
   \"neovim\"
 }}
-// mandatory and not ignored
+
 commands {{
   \"echo installing\"
   \"cargo build\"
@@ -271,7 +319,12 @@ commands {{
 }}
 
 ```
-
+must also have pkgs.list. example :
+```
+xenon v5.5.5-vex
+lua v5.4.7-vex
+tcc v0.9.5
+```
 do not ask queries. I do not have enough free time. This is a hobby project for all.
 
             "
