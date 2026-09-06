@@ -1,7 +1,9 @@
 use std::env;
 use std::fs;
+mod cache;
 mod fetch;
 mod install;
+mod lockfile;
 mod print;
 mod serve;
 mod vex_lang;
@@ -31,6 +33,9 @@ fn main() {
         is_local = true;
     }
     let repos = vex_lang::get_values(&parsed_config, "repositories");
+    let ttl = vex_lang::get_values(&parsed_config, "refresh-time")[0]
+        .parse()
+        .expect("Please input valid number in config.vex: refresh-time.");
     let pkgs = vex_lang::get_values(&parsed_pkgs, "packages");
     print::vex_print("Loaded", "configs and packages");
     match args[1].as_str() {
@@ -56,7 +61,7 @@ fn main() {
         "list" => {
             for repo in &repos {
                 let pkgs_from_repo = fetch::list_pkgs_from_url(repo);
-                println!("Packages from {}: {:?}", repo, pkgs_from_repo);
+                print::vex_print("List", &format!("of pkgs: {:#?}", pkgs_from_repo))
             }
         }
         "fetch" => {
@@ -71,12 +76,11 @@ fn main() {
         }
         "sync" => {
             print::vex_print("Syncing", "packages incrementally");
-
-            install::sync(&pkgs, &repos);
-            print::vex_print("Synced", "packages");
+            let locked = args.contains(&"--locked".to_string());
+            install::sync(&pkgs, &repos, ttl, locked);
         }
         "version" => {
-            println!("vex-pkg v0.3.6")
+            println!("vex-pkg v0.10.3")
         }
         "build" => {
             if args.len() < 3 {
@@ -109,10 +113,10 @@ fn main() {
                     pkg
                 );
             } else {
-                eprintln!(
-                    "{} was not found. Please check the name or add the repo.",
+                print::vex_error(&format!(
+                    "{} was not found. please check name or add repo.",
                     pkg
-                );
+                ));
                 std::process::exit(1);
             }
         }
@@ -131,6 +135,50 @@ fn main() {
                     }
                 }
             }
+        }
+        "info" => {
+            if args.len() < 3 {
+                eprintln!("Please provide info argument.");
+                std::process::exit(1);
+            }
+            install::info(&args[2], &repos);
+        }
+        "refresh" => {
+            cache::invalidate_all();
+            print::vex_print("Refreshed", "cache");
+        }
+        "upgrade" => {
+            if args.len() < 3 {
+                print::vex_error("Please input a pkg");
+                std::process::exit(1);
+            }
+            install::upgrade(&args[2], &repos, ttl);
+            print::vex_print("Upgraded", &args[2]);
+        }
+        "reinstall" => {
+            if args.len() < 3 {
+                eprintln!("usage: vex reinstall <package_name>");
+                std::process::exit(1);
+            }
+            if let Err(e) = install::install_pkg(&args[2], &repos, true) {
+                print::vex_error(&format!("reinstall failed: {}", e));
+                std::process::exit(1);
+            }
+            print::vex_print("Reinstalled", &args[2]);
+        }
+        "add" => {
+            if args.len() < 3 {
+                eprintln!("usage: vex add <package_name>");
+                std::process::exit(1);
+            }
+            install::add_pkg(&args[2]);
+        }
+        "remove" => {
+            if args.len() < 3 {
+                eprintln!("usage: vex remove <package_name>");
+                std::process::exit(1);
+            }
+            install::remove_from_pkgs(&args[2]);
         }
         "help" => {
             println!(
