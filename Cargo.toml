@@ -1,6 +1,6 @@
 [package]
 name = "vex-pkg"
-version = "0.8.8"
+version = "0.10.2"
 edition = "2024"
 description = "A tiny decentralized package manager that anyone can host a server for easily.."
 exclude = [
@@ -12,5 +12,6 @@ license = "Apache-2.0"
 tiny_http = "0.12.0"
 ureq = "3.4.0"
 colored = "2"
+indicatif = "0.17"
 
 
