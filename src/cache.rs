@@ -45,15 +45,6 @@ fn is_stale(path: &str, ttl_hours: u64) -> bool {
     age.as_secs() > ttl_hours * 3600
 }
 
-pub fn get_pkglist(repo_url: &str, ttl_hours: u64) -> Option<Vec<String>> {
-    let path = pkglist_path(repo_url);
-    if Path::new(&path).exists() && !is_stale(&path, ttl_hours) {
-        let content = fs::read_to_string(&path).ok()?;
-        return Some(content.lines().map(|l| l.to_string()).collect());
-    }
-    None
-}
-
 pub fn set_pkglist(repo_url: &str, pkgs: &[String]) {
     let path = pkglist_path(repo_url);
     fs::create_dir_all(Path::new(&path).parent().unwrap()).ok();
@@ -95,9 +86,4 @@ pub fn get_versions_list(repo_url: &str, ttl_hours: u64) -> Option<Vec<(String, 
         );
     }
     None
-}
-
-pub fn set_versions_list(repo_url: &str, pkgs: &[String]) {
-    // reuse set_pkglist — same file
-    set_pkglist(repo_url, pkgs);
 }

@@ -45,11 +45,23 @@ fn main() {
         is_local = true;
     }
     let repos = vex_lang::get_values(&parsed_config, "repositories");
-    let ttl = vex_lang::get_values(&parsed_config, "refresh-time")[0]
-        .parse()
-        .expect("Please input valid number in config.vex: refresh-time.");
+
+    let refresh_values = vex_lang::get_values(&parsed_config, "refresh-time");
+    let refresh_time = refresh_values[0].trim();
+
+    let ttl: u64 = if refresh_time == "inf" {
+        u64::MAX
+    } else {
+        refresh_time
+            .parse()
+            .expect("Please input valid number or `inf` into refresh-time.")
+    };
     let pkgs = vex_lang::get_values(&parsed_pkgs, "packages");
     print::vex_print("Loaded", "configs and packages");
+    let mut yes = false;
+    if args.contains(&"-y".to_string()) {
+        yes = true;
+    }
     match args[1].as_str() {
         "portserve" => {
             if args.len() < 3 {
@@ -89,7 +101,7 @@ fn main() {
         "sync" => {
             print::vex_print("Syncing", "packages incrementally");
             let locked = args.contains(&"--locked".to_string());
-            install::sync(&pkgs, &repos, ttl, locked);
+            install::sync(&pkgs, &repos, ttl, locked, yes);
         }
         "version" => {
             println!(

@@ -626,7 +626,7 @@ pub fn remote_version(pkg_name: &str, repos: &[String], ttl: u64) -> String {
 }
 // ── state machine: sync ───────────────────────────────────────────────────────
 
-pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool) {
+pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, yes: bool) {
     let start = std::time::Instant::now();
 
     fn peek_version(pkg_name: &str, repos: &[String], ttl_hours: u64) -> String {
@@ -737,9 +737,11 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool) {
     }
 
     if !to_install.is_empty() || !to_update.is_empty() {
-        if !confirm("Proceed with installation/update?") {
-            print::vex_error("Installation/Update declined.");
-            std::process::exit(1);
+        if !yes {
+            if !confirm("Proceed with installation/update?") {
+                print::vex_error("Installation/Update declined.");
+                std::process::exit(1);
+            }
         }
 
         // ── parallel fetch ────────────────────────────────────────────────
