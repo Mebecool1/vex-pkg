@@ -1,6 +1,5 @@
 use crate::cache;
 use crate::fetch;
-use crate::lockfile;
 use crate::print;
 use crate::vex_lang;
 use colored::Colorize;
@@ -221,16 +220,28 @@ fn resolve_deps(
     repos: &[String],
     visited: &mut HashSet<String>,
     needed: &mut Vec<String>,
+    pkgs_list_deps: &std::collections::HashMap<String, Vec<String>>,
 ) -> Result<(), String> {
     if visited.contains(pkg_name) {
         return Ok(());
     }
     visited.insert(pkg_name.to_string());
+    print::vex_print("Resolving", &format!("dependency closure for {}", pkg_name));
+    if let Some(deps) = pkgs_list_deps.get(pkg_name) {
+        for dep in deps {
+            if !dep.is_empty() {
+                resolve_deps(dep, repos, visited, needed, pkgs_list_deps)?;
+            }
+        }
+        needed.push(pkg_name.to_string());
+        return Ok(());
+    }
+    // fallback: fetch build.vex if no deps in pkgs.list
     let build_content = fetch_build_vex(pkg_name, repos)?;
     let parsed = vex_lang::parse_vex(&build_content);
     for dep in vex_lang::get_values(&parsed, "dependencies") {
         if !dep.is_empty() {
-            resolve_deps(&dep, repos, visited, needed)?;
+            resolve_deps(&dep, repos, visited, needed, pkgs_list_deps)?;
         }
     }
     needed.push(pkg_name.to_string());
@@ -240,7 +251,10 @@ fn resolve_deps(
 // ── fetch build.vex ───────────────────────────────────────────────────────────
 
 fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
+    print::vex_print("Fetching", &format!("build.vex for {}", pkg_name));
+    std::io::stdout().flush().unwrap();
     let installed_build = format!("{}/build.vex", pkg_dir(pkg_name));
+
     if let Ok(content) = fs::read_to_string(&installed_build) {
         return Ok(content);
     }
@@ -255,15 +269,17 @@ fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
         let known: Vec<String> = cache::get_versions_list(repo, u64::MAX)
             .map(|list| list.into_iter().map(|(n, _)| n).collect())
             .unwrap_or_else(|| fetch::list_pkgs_from_url(repo));
+
         if known
             .iter()
             .any(|p| p.trim_end_matches(".tar.zst").trim_end_matches(".tar") == pkg_name)
         {
-            fetch::fetch_pkg_to(repo, pkg_name, &tar);
+            fetch::fetch_pkg_to(repo, pkg_name, &tar, &indicatif::MultiProgress::new());
             fetched = true;
             break;
         }
     }
+
     if !fetched {
         return Err(format!("package '{}' not found in any repo", pkg_name));
     }
@@ -375,7 +391,7 @@ fn install_pkg_no_spinner(pkg_name: &str, repos: &[String], force: bool) -> Resu
                     .iter()
                     .any(|p| p.trim_end_matches(".tar.zst").trim_end_matches(".tar") == pkg_name)
                 {
-                    fetch::fetch_pkg_to(repo, pkg_name, &tar);
+                    fetch::fetch_pkg_to(repo, pkg_name, &tar, &indicatif::MultiProgress::new());
                     fetched = true;
                     break;
                 }
@@ -435,7 +451,7 @@ fn install_pkg_no_spinner(pkg_name: &str, repos: &[String], force: bool) -> Resu
         }
     }
     manifest.save(&manifest_path(pkg_name))?;
-    lockfile::update(pkg_name, &version);
+
     Ok(())
 }
 
@@ -470,7 +486,7 @@ pub fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), 
                     .iter()
                     .any(|p| p.trim_end_matches(".tar.zst").trim_end_matches(".tar") == pkg_name)
                 {
-                    fetch::fetch_pkg_to(repo, pkg_name, &tar);
+                    fetch::fetch_pkg_to(repo, pkg_name, &tar, &indicatif::MultiProgress::new());
                     fetched = true;
                     break;
                 }
@@ -520,7 +536,7 @@ pub fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), 
             print!(
                 "\r{:>12} {} {}...",
                 frames[i % frames.len()].cyan().bold(),
-                "Compiling".cyan().bold(),
+                "Installing/Compiling".cyan().bold(),
                 pkg
             );
             std::io::stdout().flush().unwrap();
@@ -574,7 +590,7 @@ pub fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), 
         }
     }
     manifest.save(&manifest_path(pkg_name))?;
-    lockfile::update(pkg_name, &version);
+
     Ok(())
 }
 
@@ -598,7 +614,7 @@ fn remove_pkg(pkg_name: &str, _repos: &[String]) {
             let _ = fs::remove_dir_all(pkg_dir(pkg_name));
         }
     }
-    lockfile::remove(pkg_name);
+
     print::vex_print("Removed", pkg_name);
 }
 // -- version stuff
@@ -618,7 +634,7 @@ pub fn remote_version(pkg_name: &str, repos: &[String], ttl: u64) -> String {
             }
         }
         let list = fetch::list_versions_from_url(repo);
-        if let Some((_, v)) = list.iter().find(|(n, _)| n == pkg_name) {
+        if let Some((_, v, _)) = list.iter().find(|(n, _, _)| n == pkg_name) {
             return v.clone();
         }
     }
@@ -626,7 +642,7 @@ pub fn remote_version(pkg_name: &str, repos: &[String], ttl: u64) -> String {
 }
 // ── state machine: sync ───────────────────────────────────────────────────────
 
-pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, yes: bool) {
+pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
     let start = std::time::Instant::now();
 
     fn peek_version(pkg_name: &str, repos: &[String], ttl_hours: u64) -> String {
@@ -640,15 +656,19 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, y
             // cache miss — fetch pkgs.list
             let list = fetch::list_versions_from_url(repo);
             if !list.is_empty() {
-                let raw: Vec<String> = list.iter().map(|(n, v)| format!("{} {}", n, v)).collect();
+                let raw: Vec<String> = list
+                    .iter()
+                    .map(|(n, v, _)| format!("{} {}", n, v))
+                    .collect();
                 cache::set_pkglist(repo, &raw);
-                if let Some((_, v)) = list.iter().find(|(n, _)| n == pkg_name) {
+                if let Some((_, v, _)) = list.iter().find(|(n, _, _)| n == pkg_name) {
                     return v.clone();
                 }
             }
         }
         String::new()
     }
+
     fn confirm(prompt: &str) -> bool {
         print!("{} {} ", "::".cyan().bold(), prompt.bold());
         print!("{}", "[Y/n] ".dimmed());
@@ -658,23 +678,21 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, y
         matches!(input.trim().to_lowercase().as_str(), "y" | "yes" | "")
     }
 
-    fn needs_update(pkg_name: &str, repos: &[String], ttl_hours: u64, locked: bool) -> bool {
-        let local = Manifest::load(&manifest_path(pkg_name))
-            .map(|m| m.version)
-            .unwrap_or_default();
-        if locked {
-            let lock = lockfile::read();
-            let pinned = lock.get(pkg_name).cloned().unwrap_or_default();
-            return local != pinned;
+    let mut pkgs_list_deps: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for repo in repos {
+        for (name, _, deps) in fetch::list_versions_from_url(repo) {
+            if !deps.is_empty() {
+                pkgs_list_deps.insert(name, deps);
+            }
         }
-        let remote = peek_version(pkg_name, repos, ttl_hours);
-        local != remote
     }
 
     let mut visited = HashSet::new();
     let mut needed: Vec<String> = Vec::new();
+
     for pkg in desired_pkgs {
-        if let Err(e) = resolve_deps(pkg, repos, &mut visited, &mut needed) {
+        if let Err(e) = resolve_deps(pkg, repos, &mut visited, &mut needed, &pkgs_list_deps) {
             print::vex_error(&e);
             print::vex_error("aborting sync — system state unchanged.");
             return;
@@ -684,8 +702,10 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, y
     let currently_installed = installed_pkgs();
     let to_install: Vec<_> = needed.iter().filter(|p| !is_installed(p)).collect();
     // before building to_update, parallel-peek all installed pkgs
+
     let needed_arc = Arc::new(needed.clone());
     let repos_arc = Arc::new(repos.to_vec());
+
     let remote_versions: std::collections::HashMap<String, String> = {
         let handles: Vec<_> = needed_arc
             .iter()
@@ -752,10 +772,6 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, y
             .collect();
 
         let multi_fetch = Arc::new(MultiProgress::new());
-        let fetch_style = ProgressStyle::default_spinner()
-            .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣿"])
-            .template("    {spinner:.cyan.bold} {msg}")
-            .unwrap();
         let repos_fetch = Arc::new(repos.to_vec());
 
         let fetch_handles: Vec<_> = all_to_get
@@ -763,7 +779,7 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, y
             .map(|pkg| {
                 let repos = repos_fetch.clone();
                 let multi = multi_fetch.clone();
-                let style = fetch_style.clone();
+
                 thread::spawn(move || {
                     let tar = tar_path(&pkg);
                     if Path::new(&tar).exists() {
@@ -776,12 +792,8 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, y
                         if known.iter().any(|p| {
                             p.trim_end_matches(".tar.zst").trim_end_matches(".tar") == pkg.as_str()
                         }) {
-                            let pb = multi.add(ProgressBar::new_spinner());
-                            pb.set_style(style.clone());
-                            pb.set_message(format!("{} {}...", "Fetching".cyan().bold(), pkg));
-                            pb.enable_steady_tick(std::time::Duration::from_millis(80));
-                            fetch::fetch_pkg_to(repo, &pkg, &tar);
-                            pb.finish_with_message(format!("{} {}", "Fetched".green().bold(), pkg));
+                            fetch::fetch_pkg_to(repo, &pkg, &tar, &multi);
+
                             return;
                         }
                     }
@@ -809,7 +821,7 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, y
                     let parsed = vex_lang::parse_vex(&content);
                     !vex_lang::get_values(&parsed, "install-to").is_empty()
                 })
-                .unwrap_or(false);
+                .unwrap_or(true);
             if has_install_to {
                 parallel.push((pkg.clone(), *force));
             } else {
@@ -817,7 +829,7 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, y
             }
         } // ── parallel builds ───────────────────────────────────────────────
         println!();
-        print::vex_print("Compiling", "packages");
+        print::vex_print("Installing/Compiling", "packages");
         if !parallel.is_empty() {
             let multi = Arc::new(MultiProgress::new());
             let spinner_style = ProgressStyle::default_spinner()
@@ -835,13 +847,17 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, y
                     thread::spawn(move || {
                         let pb = multi.add(ProgressBar::new_spinner());
                         pb.set_style(style);
-                        pb.set_message(format!("{} {}...", "Compiling".cyan().bold(), pkg));
+                        pb.set_message(format!(
+                            "{} {}...",
+                            "Installing/Compiling".cyan().bold(),
+                            pkg
+                        ));
                         pb.enable_steady_tick(std::time::Duration::from_millis(80));
                         let result = install_pkg_no_spinner(&pkg, &repos, force);
                         match &result {
                             Ok(_) => pb.finish_with_message(format!(
                                 "{} {}",
-                                "Compiled".green().bold(),
+                                "Installed/Compiled".green().bold(),
                                 pkg
                             )),
                             Err(e) => pb.finish_with_message(format!(
@@ -885,14 +901,6 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, locked: bool, y
         }
     }
 
-    if !Path::new(&lockfile::lock_path()).exists() {
-        for pkg in &needed {
-            if let Ok(manifest) = Manifest::load(&manifest_path(pkg)) {
-                lockfile::update(pkg, &manifest.version);
-            }
-        }
-    }
-
     print::vex_print(
         "Finished",
         &format!("sync in {:.2}s", start.elapsed().as_secs_f64()),
@@ -919,7 +927,7 @@ pub fn upgrade(pkg_name: &str, repos: &[String], ttl: u64) {
             if let Some(v) = cache::get_version(repo, pkg_name, ttl) {
                 remote_version = v;
             } else {
-                fetch::fetch_pkg_to(repo, pkg_name, &tar);
+                fetch::fetch_pkg_to(repo, pkg_name, &tar, &indicatif::MultiProgress::new());
                 let tmp = format!("{}/.vex/.tmp_peek_{}", home(), pkg_name);
                 fs::create_dir_all(&tmp).ok();
                 std::process::Command::new("tar")

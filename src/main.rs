@@ -3,7 +3,6 @@ use std::fs;
 mod cache;
 mod fetch;
 mod install;
-mod lockfile;
 mod print;
 mod serve;
 mod vex_lang;
@@ -62,6 +61,13 @@ fn main() {
     if args.contains(&"-y".to_string()) {
         yes = true;
     }
+    let mut sync_on_add_remove = false;
+    if args.contains(&"--sync".to_string()) || args.contains(&"-s".to_string()) {
+        sync_on_add_remove = true;
+    }
+    if vex_lang::get_values(&parsed_config, "sync-on-add-remove").contains(&String::from("true")) {
+        sync_on_add_remove = true;
+    }
     match args[1].as_str() {
         "portserve" => {
             if args.len() < 3 {
@@ -95,13 +101,17 @@ fn main() {
             }
             let pkg_name = &args[2];
             for repo in &repos {
-                fetch::fetch_pkg_to(repo, pkg_name, &format!("{}_pkg.tar", pkg_name));
+                fetch::fetch_pkg_to(
+                    repo,
+                    pkg_name,
+                    &format!("{}_pkg.tar", pkg_name),
+                    &indicatif::MultiProgress::new(),
+                );
             }
         }
         "sync" => {
             print::vex_print("Syncing", "packages incrementally");
-            let locked = args.contains(&"--locked".to_string());
-            install::sync(&pkgs, &repos, ttl, locked, yes);
+            install::sync(&pkgs, &repos, ttl, yes);
         }
         "version" => {
             println!(
@@ -201,6 +211,15 @@ fn main() {
                 std::process::exit(1);
             }
             install::add_pkg(&args[2]);
+
+            if sync_on_add_remove {
+                let pkgs_content = fs::read_to_string(&pkgs_path).unwrap();
+                let parsed_pkgs = vex_lang::parse_vex(&pkgs_content);
+                let pkgs = vex_lang::get_values(&parsed_pkgs, "packages");
+
+                print::vex_print("Syncing", "packages incrementally");
+                install::sync(&pkgs, &repos, ttl, yes);
+            }
         }
         "remove" => {
             if args.len() < 3 {
@@ -208,6 +227,15 @@ fn main() {
                 std::process::exit(1);
             }
             install::remove_from_pkgs(&args[2]);
+
+            if sync_on_add_remove {
+                let pkgs_content = fs::read_to_string(&pkgs_path).unwrap();
+                let parsed_pkgs = vex_lang::parse_vex(&pkgs_content);
+                let pkgs = vex_lang::get_values(&parsed_pkgs, "packages");
+
+                print::vex_print("Syncing", "packages incrementally");
+                install::sync(&pkgs, &repos, ttl, yes);
+            }
         }
         "outdated" => {
             for pkg in &pkgs {
