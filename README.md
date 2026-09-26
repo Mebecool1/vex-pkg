@@ -5,7 +5,7 @@ Anyone can host a repo for it easily.
 It does not need sudo/root access, it does thing in the userspace, unless the package maintainer uses sudo within their package.
 
 There is no central point of failure, if a repo goes down, it is not like the package manager is now useless, another repo can easily be created and vex-pkg will still be usable.
-
+```
 Commands: {
 
   serve -> serve a local server at localhost:45311
@@ -33,7 +33,7 @@ Commands: {
   info <pkg> -> get info on a pkg
 
 }
-
+```
 vex_lang syntax: (.vex) {
   ```
   key {
