@@ -68,6 +68,7 @@ fn main() {
     if vex_lang::get_values(&parsed_config, "sync-on-add-remove").contains(&String::from("true")) {
         sync_on_add_remove = true;
     }
+
     match args[1].as_str() {
         "portserve" => {
             if args.len() < 3 {
@@ -207,10 +208,16 @@ fn main() {
         }
         "add" => {
             if args.len() < 3 {
-                eprintln!("usage: vex add <package_name>");
+                eprintln!("usage: vex add <package_name>...");
                 std::process::exit(1);
             }
-            install::add_pkg(&args[2]);
+
+            for package in &args[2..] {
+                if package == "-y" || package == "--yes" {
+                    continue;
+                }
+                install::add_pkg(package);
+            }
 
             if sync_on_add_remove {
                 let pkgs_content = fs::read_to_string(&pkgs_path).unwrap();
@@ -223,10 +230,13 @@ fn main() {
         }
         "remove" => {
             if args.len() < 3 {
-                eprintln!("usage: vex remove <package_name>");
+                eprintln!("usage: vex remove <package_name>...");
                 std::process::exit(1);
             }
-            install::remove_from_pkgs(&args[2]);
+
+            for package in &args[2..] {
+                install::remove_from_pkgs(package);
+            }
 
             if sync_on_add_remove {
                 let pkgs_content = fs::read_to_string(&pkgs_path).unwrap();

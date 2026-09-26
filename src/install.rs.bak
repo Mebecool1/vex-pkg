@@ -20,31 +20,7 @@ use std::thread;
 fn home() -> String {
     env::var("HOME").expect("Failed to get HOME")
 }
-/// Call after fetch_pkg_to. If repo has a checksum, verify — abort on mismatch.
-/// Returns Err if mismatch, Ok(()) if verified or checksum missing (old repo).
-fn verify_pkg_checksum(repo: &str, pkg_name: &str, tar: &str) -> Result<(), String> {
-    match fetch::fetch_checksum(repo, pkg_name) {
-        None => {
-            print::vex_warn(&format!(
-                "no checksum found for '{}' — skipping verification",
-                pkg_name
-            ));
-            Ok(())
-        }
-        Some(expected) => {
-            if fetch::verify_checksum(tar, &expected) {
-                print::vex_print("Verified", &format!("checksum ok for {}", pkg_name));
-                Ok(())
-            } else {
-                let _ = fs::remove_file(tar);
-                Err(format!(
-                    "checksum mismatch for '{}' — tar deleted, aborting",
-                    pkg_name
-                ))
-            }
-        }
-    }
-}
+
 fn vex_pkgs_dir() -> String {
     format!("{}/.vex/pkgs", home())
 }
@@ -243,37 +219,47 @@ fn resolve_deps(
     pkg_name: &str,
     repos: &[String],
     visited: &mut HashSet<String>,
+    in_stack: &mut HashSet<String>,
     needed: &mut Vec<String>,
     pkgs_list_deps: &HashMap<String, Vec<String>>,
 ) -> Result<(), String> {
+    if in_stack.contains(pkg_name) {
+        return Err(format!(
+            "Circular dependency detected involving package '{}'",
+            pkg_name
+        ));
+    }
     if visited.contains(pkg_name) {
         return Ok(());
     }
-    visited.insert(pkg_name.to_string());
-    print::vex_print("Resolving", &format!("dependency closure for {}", pkg_name));
-    if let Some(deps) = pkgs_list_deps.get(pkg_name) {
-        for dep in deps {
-            if !dep.is_empty() {
-                resolve_deps(dep, repos, visited, needed, pkgs_list_deps)?;
-            }
-        }
-        needed.push(pkg_name.to_string());
-        return Ok(());
-    }
-    let build_content = fetch_build_vex(pkg_name, repos)?;
-    let parsed = vex_lang::parse_vex(&build_content);
-    for dep in vex_lang::get_values(&parsed, "dependencies") {
-        if !dep.is_empty() {
-            resolve_deps(&dep, repos, visited, needed, pkgs_list_deps)?;
-        }
-    }
-    needed.push(pkg_name.to_string());
-    Ok(())
-}
 
-// ── fetch build.vex ───────────────────────────────────────────────────────────
+    in_stack.insert(pkg_name.to_string());
+    print::vex_print("Resolving", &format!("dependency closure for {}", pkg_name));
+
+    let deps = if let Some(deps) = pkgs_list_deps.get(pkg_name) {
+        deps.clone()
+    } else {
+        let build_content = fetch_build_vex(pkg_name, repos)?;
+        let parsed = vex_lang::parse_vex(&build_content);
+        vex_lang::get_values(&parsed, "dependencies")
+    };
+
+    for dep in deps {
+        if !dep.is_empty() {
+            resolve_deps(&dep, repos, visited, in_stack, needed, pkgs_list_deps)?;
+        }
+    }
+
+    in_stack.remove(pkg_name);
+    visited.insert(pkg_name.to_string());
+    needed.push(pkg_name.to_string());
+
+    Ok(())
+} // ── fetch build.vex ───────────────────────────────────────────────────────────
 
 fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
+    print::vex_print("Downloading", &format!("build.vex for {}", pkg_name));
+    std::io::stdout().flush().unwrap();
     let installed_build = format!("{}/build.vex", pkg_dir(pkg_name));
 
     if let Ok(content) = fs::read_to_string(&installed_build) {
@@ -283,9 +269,6 @@ fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
     if let Some(content) = fetch::get_build_vex(pkg_name) {
         return Ok(content);
     }
-
-    print::vex_print("Downloading", &format!("build.vex for {}", pkg_name));
-    std::io::stdout().flush().unwrap();
     let tar = tar_path(pkg_name);
     fs::create_dir_all(vex_pkgs_dir()).map_err(|e| e.to_string())?;
     let mut fetched = false;
@@ -299,7 +282,6 @@ fn fetch_build_vex(pkg_name: &str, repos: &[String]) -> Result<String, String> {
             .any(|p| p.trim_end_matches(".tar.zst").trim_end_matches(".tar") == pkg_name)
         {
             fetch::fetch_pkg_to(repo, pkg_name, &tar, &indicatif::MultiProgress::new());
-            verify_pkg_checksum(repo, pkg_name, &tar)?;
             fetched = true;
             break;
         }
@@ -417,7 +399,6 @@ fn install_pkg_no_spinner(pkg_name: &str, repos: &[String], force: bool) -> Resu
                     .any(|p| p.trim_end_matches(".tar.zst").trim_end_matches(".tar") == pkg_name)
                 {
                     fetch::fetch_pkg_to(repo, pkg_name, &tar, &indicatif::MultiProgress::new());
-                    verify_pkg_checksum(repo, pkg_name, &tar)?;
                     fetched = true;
                     break;
                 }
@@ -513,7 +494,6 @@ pub fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), 
                     .any(|p| p.trim_end_matches(".tar.zst").trim_end_matches(".tar") == pkg_name)
                 {
                     fetch::fetch_pkg_to(repo, pkg_name, &tar, &indicatif::MultiProgress::new());
-                    verify_pkg_checksum(repo, pkg_name, &tar)?;
                     fetched = true;
                     break;
                 }
@@ -555,6 +535,7 @@ pub fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), 
     let done = Arc::new(AtomicBool::new(false));
     let done_clone = done.clone();
     let pkg = pkg_name.to_string();
+    println!();
     let spinner_thread = std::thread::spawn(move || {
         let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         let mut i = 0;
@@ -594,7 +575,7 @@ pub fn install_pkg(pkg_name: &str, repos: &[String], force: bool) -> Result<(), 
     }
     done.store(true, Ordering::Relaxed);
     let _ = spinner_thread.join();
-    print!("\r{:>80}\r", ""); // clear spinner line, no trailing newline
+    print!("\r{:>13}\n", " ");
     let mut manifest = Manifest::new((*version).to_string());
     if install_to.is_empty() {
         let after = snapshot_paths(&roots);
@@ -671,80 +652,6 @@ pub fn remote_version(pkg_name: &str, repos: &[String], ttl: u64) -> String {
     String::new()
 }
 
-// Quietly fetches and extracts build.vex into cache without corrupting stdout/spinners
-pub fn ensure_build_vex_cached(pkg_name: &str, repos: &[String]) -> Result<String, String> {
-    if let Some(content) = fetch::get_build_vex(pkg_name) {
-        return Ok(content);
-    }
-
-    let installed_build = format!("{}/build.vex", pkg_dir(pkg_name));
-    if let Ok(content) = fs::read_to_string(&installed_build) {
-        fetch::set_build_vex(pkg_name, &content);
-        return Ok(content);
-    }
-
-    let tar = tar_path(pkg_name);
-    if Path::new(&tar).exists() {
-        return extract_vex_from_tar(&tar, pkg_name);
-    }
-
-    let tmp_tar = format!("{}/.tmp_peek_{}.tar.zst", vex_pkgs_dir(), pkg_name);
-    fs::create_dir_all(vex_pkgs_dir()).map_err(|e| e.to_string())?;
-
-    let mut fetched = false;
-    for repo in repos {
-        let known: Vec<String> = cache::get_versions_list(repo, u64::MAX)
-            .map(|list| list.into_iter().map(|(n, _)| n).collect())
-            .unwrap_or_else(|| fetch::list_pkgs_from_url(repo));
-
-        if known
-            .iter()
-            .any(|p| p.trim_end_matches(".tar.zst").trim_end_matches(".tar") == pkg_name)
-        {
-            fetch::fetch_pkg_to(repo, pkg_name, &tmp_tar, &indicatif::MultiProgress::new());
-            verify_pkg_checksum(repo, pkg_name, &tar)?;
-            fetched = true;
-            break;
-        }
-    }
-
-    if !fetched {
-        return Err(format!("package '{}' not found in any repo", pkg_name));
-    }
-
-    let res = extract_vex_from_tar(&tmp_tar, pkg_name);
-    let _ = fs::remove_file(&tmp_tar);
-
-    res
-}
-
-pub fn extract_vex_from_tar(tar_path: &str, pkg_name: &str) -> Result<String, String> {
-    let tmp_dir = format!("{}/.vex/.tmp_peek_dir_{}", home(), pkg_name);
-    fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
-
-    let status = std::process::Command::new("tar")
-        .args(["-xf", tar_path, "-C", &tmp_dir])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| e.to_string())?;
-
-    if !status.success() {
-        let _ = fs::remove_dir_all(&tmp_dir);
-        return Err(format!("tar failed for package '{}'", pkg_name));
-    }
-
-    let content = fs::read_to_string(format!("{}/build.vex", tmp_dir)).map_err(|_| {
-        let _ = fs::remove_dir_all(&tmp_dir);
-        format!("build.vex missing in package '{}'", pkg_name)
-    })?;
-
-    fetch::set_build_vex(pkg_name, &content);
-    let _ = fs::remove_dir_all(&tmp_dir);
-
-    Ok(content)
-}
-
 // ── state machine: sync ───────────────────────────────────────────────────────
 
 pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
@@ -789,19 +696,32 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
     }
 
     let mut visited = HashSet::new();
+    let mut in_stack = HashSet::new();
     let mut needed: Vec<String> = Vec::new();
 
     for pkg in desired_pkgs {
-        if let Err(e) = resolve_deps(pkg, repos, &mut visited, &mut needed, &pkgs_list_deps) {
+        if let Err(e) = resolve_deps(
+            pkg,
+            repos,
+            &mut visited,
+            &mut in_stack,
+            &mut needed,
+            &pkgs_list_deps,
+        ) {
             print::vex_error(&e);
             print::vex_error("aborting sync — system state unchanged.");
             return;
         }
     }
-
     let currently_installed = installed_pkgs();
+    let needed_set: HashSet<String> = needed.iter().cloned().collect();
     let to_install: Vec<_> = needed.iter().filter(|p| !is_installed(p)).collect();
 
+    // Identify orphaned packages no longer needed by anything in pkgs.vex
+    let to_remove: Vec<String> = currently_installed
+        .difference(&needed_set)
+        .cloned()
+        .collect();
     let needed_arc = Arc::new(needed.clone());
     let repos_arc = Arc::new(repos.to_vec());
 
@@ -855,13 +775,29 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
                 .join("  "),
         );
     }
-
+    if !to_remove.is_empty() {
+        print::vex_print(
+            "To Remove (Orphans)",
+            &to_remove
+                .iter()
+                .map(|p| p.as_str())
+                .collect::<Vec<_>>()
+                .join("  "),
+        );
+    }
     if !to_install.is_empty() || !to_update.is_empty() {
         let all_to_build: Vec<(String, bool)> = to_install
             .iter()
             .map(|p| (p.to_string(), false))
             .chain(to_update.iter().map(|p| (p.to_string(), true)))
             .collect();
+
+        let mut pkgs_list_deps: HashMap<String, Vec<String>> = HashMap::new();
+        for repo in repos {
+            for (name, _, deps) in fetch::list_versions_from_url(repo) {
+                pkgs_list_deps.insert(name, deps);
+            }
+        }
 
         let mut queue_deps: HashMap<String, HashSet<String>> = HashMap::new();
         for (pkg, _) in &all_to_build {
@@ -913,7 +849,7 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
             }
         }
 
-        print::vex_print("Fetching", "packages");
+        print::vex_print("Downloading", "packages");
 
         let all_to_get: Vec<String> = all_to_build.iter().map(|(p, _)| p.to_string()).collect();
 
@@ -939,12 +875,6 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
                             p.trim_end_matches(".tar.zst").trim_end_matches(".tar") == pkg.as_str()
                         }) {
                             fetch::fetch_pkg_to(repo, &pkg, &tar, &multi);
-                            verify_pkg_checksum(repo, &pkg, &tar).unwrap_or_else(|e| {
-                                print::vex_error(&format!(
-                                    "Failed to verify checksum. Exact error: {e}"
-                                ));
-                                std::process::exit(1);
-                            });
                             return;
                         }
                     }
@@ -956,32 +886,14 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
             handle.join().unwrap();
         }
 
-        // Tars are on disk. Peek build.vex out of each tar into the cache so
-        // classification below can read install-to without any network calls or prints.
-        for (pkg, _) in &all_to_build {
-            if fetch::get_build_vex(pkg).is_none() {
-                let from_dir = fs::read_to_string(format!("{}/build.vex", pkg_dir(pkg))).ok();
-                if let Some(content) = from_dir {
-                    fetch::set_build_vex(pkg, &content);
-                } else {
-                    let tar = tar_path(pkg);
-                    if Path::new(&tar).exists() {
-                        let _ = extract_vex_from_tar(&tar, pkg);
-                    }
-                }
-            }
-        }
-
-        let read_build_vex_local = |pkg: &str| -> Option<String> {
-            fetch::get_build_vex(pkg)
-                .or_else(|| fs::read_to_string(format!("{}/build.vex", pkg_dir(pkg))).ok())
-        };
-
         let mut parallel: Vec<(String, bool)> = Vec::new();
         let mut sequential: Vec<(String, bool)> = Vec::new();
 
         for (pkg, force) in &all_to_build {
-            let has_install_to = read_build_vex_local(pkg)
+            let build_content =
+                fetch::get_build_vex(pkg).or_else(|| fetch_build_vex(pkg, repos).ok());
+
+            let has_install_to = build_content
                 .map(|content| {
                     let parsed = vex_lang::parse_vex(&content);
                     !vex_lang::get_values(&parsed, "install-to").is_empty()
@@ -995,14 +907,13 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
             }
         }
 
+        println!();
         print::vex_print("Installing/Compiling", "packages");
-
-        let mut built_set: HashSet<String> = currently_installed.clone();
 
         if !parallel.is_empty() {
             let mut deps_map: HashMap<String, HashSet<String>> = HashMap::new();
             for (pkg, _) in &parallel {
-                let deps = read_build_vex_local(pkg)
+                let deps = fetch_build_vex(pkg, repos)
                     .map(|content| {
                         let parsed = vex_lang::parse_vex(&content);
                         vex_lang::get_values(&parsed, "dependencies")
@@ -1015,6 +926,7 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
             }
 
             let mut remaining_parallel = parallel;
+            let mut built_set: HashSet<String> = currently_installed.clone();
 
             while !remaining_parallel.is_empty() {
                 let (ready, not_ready): (Vec<_>, Vec<_>) =
@@ -1090,68 +1002,17 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
             }
         }
 
-        if !sequential.is_empty() {
-            let mut seq_deps_map: HashMap<String, HashSet<String>> = HashMap::new();
-            for (pkg, _) in &sequential {
-                let deps = read_build_vex_local(pkg)
-                    .map(|content| {
-                        let parsed = vex_lang::parse_vex(&content);
-                        vex_lang::get_values(&parsed, "dependencies")
-                            .into_iter()
-                            .filter(|d| !d.is_empty())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                seq_deps_map.insert(pkg.clone(), deps);
-            }
-
-            let mut remaining_seq = sequential;
-            let mut seq_built_set = built_set.clone();
-
-            while !remaining_seq.is_empty() {
-                let (ready, not_ready): (Vec<_>, Vec<_>) =
-                    remaining_seq.into_iter().partition(|(pkg, _)| {
-                        seq_deps_map
-                            .get(pkg)
-                            .map(|deps| deps.iter().all(|d| seq_built_set.contains(d)))
-                            .unwrap_or(true)
-                    });
-
-                if ready.is_empty() {
-                    print::vex_error(
-                        "Circular or unresolvable dependency in sequential build queue!",
-                    );
-                    return;
-                }
-
-                remaining_seq = not_ready;
-
-                for (pkg, force) in &ready {
-                    if let Err(e) = install_pkg(pkg, repos, *force) {
-                        print::vex_error(&format!("error installing '{}': {}", pkg, e));
-                        print::vex_error(
-                            "aborting sync — some packages may be partially installed.",
-                        );
-                        return;
-                    }
-                    seq_built_set.insert(pkg.clone());
-                }
+        for (pkg, force) in &sequential {
+            if let Err(e) = install_pkg(pkg, repos, *force) {
+                print::vex_error(&format!("error installing '{}': {}", pkg, e));
+                print::vex_error("aborting sync — some packages may be partially installed.");
+                return;
             }
         }
     }
-    // ── orphan removal ────────────────────────────────────────────────────────
-    let wanted: HashSet<String> = needed.iter().cloned().collect();
-    let orphans: Vec<String> = installed_pkgs()
-        .into_iter()
-        .filter(|p| !wanted.contains(p))
-        .collect();
-
-    if !orphans.is_empty() {
-        print::vex_print(
-            "Removing",
-            &format!("orphaned deps: {}", orphans.join("  ")),
-        );
-        for pkg in &orphans {
+    if !to_remove.is_empty() {
+        print::vex_print("Cleaning", "orphan dependencies");
+        for pkg in &to_remove {
             remove_pkg(pkg, repos);
         }
     }
@@ -1160,7 +1021,6 @@ pub fn sync(desired_pkgs: &[String], repos: &[String], ttl: u64, yes: bool) {
         &format!("sync in {:.2}s", start.elapsed().as_secs_f64()),
     );
 }
-
 // ── upgrade ───────────────────────────────────────────────────────────────────
 
 pub fn upgrade(pkg_name: &str, repos: &[String], ttl: u64) {

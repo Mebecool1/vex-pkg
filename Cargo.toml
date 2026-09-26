@@ -1,6 +1,6 @@
 [package]
 name = "vex-pkg"
-version = "1.3.0"
+version = "1.4.1"
 edition = "2024"
 description = "A tiny decentralized package manager that anyone can host a server for easily.."
 exclude = [
@@ -13,7 +13,7 @@ tiny_http = "0.12.0"
 ureq = "3.4.0"
 colored = "2"
 indicatif = "0.17"
-
+sha2 = "0.10"
 [[bin]]
 name = "vex"
 path = "src/main.rs"

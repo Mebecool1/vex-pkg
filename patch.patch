@@ -1,0 +1,52 @@
+--- a/src/install.rs
++++ b/src/install.rs
+@@ -806,6 +806,11 @@
+     let currently_installed = installed_pkgs();
++    let needed_set: HashSet<String> = needed.iter().cloned().collect();
+     let to_install: Vec<_> = needed.iter().filter(|p| !is_installed(p)).collect();
++    let to_remove: Vec<String> = currently_installed
++        .difference(&needed_set)
++        .cloned()
++        .collect();
+ 
+     let needed_arc = Arc::new(needed.clone());
+     let repos_arc = Arc::new(repos.to_vec());
+@@ -849,12 +854,22 @@
+                 &to_update
+                     .iter()
+                     .map(|p| p.as_str())
+                     .collect::<Vec<_>>()
+                     .join("  "),
+             );
+         }
++        if !to_remove.is_empty() {
++            print::vex_print(
++                "To Remove (Orphans)",
++                &to_remove
++                    .iter()
++                    .map(|p| p.as_str())
++                    .collect::<Vec<_>>()
++                    .join("  "),
++            );
++        }
+ 
+-        if !to_install.is_empty() || !to_update.is_empty() {
++        if !to_install.is_empty() || !to_update.is_empty() || !to_remove.is_empty() {
+             let all_to_build: Vec<(String, bool)> = to_install
+                 .iter()
+                 .map(|p| (p.to_string(), false))
+@@ -1074,6 +1089,15 @@
+             }
+         }
+ 
++        if !to_remove.is_empty() {
++            println!();
++            print::vex_print("Cleaning", "orphan dependencies");
++            for pkg in &to_remove {
++                remove_pkg(pkg, repos);
++            }
++        }
++
+         print::vex_print(
+             "Finished",
+             &format!("sync in {:.2}s", start.elapsed().as_secs_f64()),

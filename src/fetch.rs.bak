@@ -35,23 +35,12 @@ pub fn list_versions_from_url(repo_url: &str) -> Vec<(String, String, Vec<String
                         .unwrap_or("")
                         .trim_start_matches('v')
                         .to_string();
-                    // Collect remaining tokens and rejoin so we handle both
-                    // "deps=foo,bar" (one token) and "deps= foo,bar" (two tokens).
-                    let rest = parts.collect::<Vec<&str>>().join(" ");
-                    // Normalise: collapse any whitespace around the = so "deps= bar"
-                    // and "deps =bar" both become "deps=bar" before we search.
-                    let rest_normalised = rest
-                        .replace("deps =", "deps=")
-                        .replace("deps= ", "deps=")
-                        .replace("deps = ", "deps=");
-                    let deps: Vec<String> = rest_normalised
-                        .split_whitespace()
+                    let deps = parts
                         .find(|p| p.starts_with("deps="))
                         .map(|p| {
                             p.trim_start_matches("deps=")
                                 .split(',')
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string())
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -105,7 +94,7 @@ pub fn fetch_pkg_to(url: &str, pkg_name: &str, dest: &str, multi: &indicatif::Mu
                     pb
                 };
                 let pb = multi.add(raw_pb);
-                pb.set_prefix(format!("     Downloading {}", pkg_name));
+                pb.set_prefix(format!("Fetching {}", pkg_name));
                 pb.enable_steady_tick(std::time::Duration::from_millis(80));
 
                 let mut file = match fs::File::create(dest) {
@@ -131,7 +120,7 @@ pub fn fetch_pkg_to(url: &str, pkg_name: &str, dest: &str, multi: &indicatif::Mu
                         }
                     }
                 }
-                pb.finish_with_message("Downloaded");
+                pb.finish_with_message("done");
                 return;
             }
         }
@@ -151,51 +140,4 @@ pub fn set_build_vex(pkg_name: &str, content: &str) {
     let path = format!("{}/build_vex/{}.buildvex", cache::cache_dir(), pkg_name);
     fs::create_dir_all(Path::new(&path).parent().unwrap()).ok();
     fs::write(&path, content).ok();
-}
-/// Fetch checksums/{pkg}.sha256 from repo.
-/// Returns expected hex string or None if file doesn't exist (old repo, skip verify).
-pub fn fetch_checksum(repo_url: &str, pkg_name: &str) -> Option<String> {
-    let repo = repo_url.trim_end_matches('/');
-    let urls = [format!("{}/checksums/{}.sha256", repo, pkg_name)];
-
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(10)))
-        .build()
-        .into();
-
-    for url in &urls {
-        if let Ok(mut resp) = agent.get(url).call() {
-            if resp.status() == 200 {
-                if let Ok(text) = resp.body_mut().read_to_string() {
-                    // sha256sum format: "abc123...  filename" or just "abc123..."
-                    let hash = text.split_whitespace().next().map(|s| s.to_string());
-                    return hash;
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Compute sha256 of file at path and compare to expected hex string.
-pub fn verify_checksum(file_path: &str, expected: &str) -> bool {
-    use sha2::{Digest, Sha256};
-    use std::io::BufReader;
-
-    let file = match fs::File::open(file_path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    let mut reader = BufReader::new(file);
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        match std::io::Read::read(&mut reader, &mut buf) {
-            Ok(0) => break,
-            Ok(n) => hasher.update(&buf[..n]),
-            Err(_) => return false,
-        }
-    }
-    let result = format!("{:x}", hasher.finalize());
-    result == expected.trim().to_lowercase()
 }
